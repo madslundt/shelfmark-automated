@@ -89,6 +89,7 @@ class ShelfmarkClient:
         self._no_auth_mode = False
         self._auth_time: datetime | None = None
         self._submission_mode: str | None = None  # "request" or "download"; fetched lazily
+        self._source_modes: dict[str, dict] = {}  # keyed by source name; from /api/request-policy
 
     # ------------------------------------------------------------------
     # Public API
@@ -374,6 +375,10 @@ class ShelfmarkClient:
             resp = self._session.get(f"{self._base_url}/api/request-policy", timeout=10)
             if resp.ok:
                 policy = resp.json()
+                for sm in policy.get("source_modes", []):
+                    src = sm.get("source", "")
+                    if src:
+                        self._source_modes[src] = sm
                 if not policy.get("requests_enabled", True):
                     log.info("Shelfmark: request workflow disabled — using download mode")
                     return "download"
@@ -405,9 +410,15 @@ class ShelfmarkClient:
 
         Maps source/source_id (or falls back to provider/provider_id) and passes
         through optional release fields (year, format, size, preview, search_mode).
+
+        For sources where browse_results_are_releases is True (e.g. direct_download),
+        the metadata results are already release objects and search_mode must be "direct".
+        This is derived from the source_modes fetched via /api/request-policy when the
+        metadata result does not already include a search_mode field.
         """
+        source = metadata.get("source") or metadata.get("provider", "")
         payload: dict = {
-            "source": metadata.get("source") or metadata.get("provider", ""),
+            "source": source,
             "source_id": str(metadata.get("source_id") or metadata.get("provider_id", "")),
             "title": metadata.get("title") or book.title,
             "author": metadata.get("author") or book.author,
@@ -416,6 +427,18 @@ class ShelfmarkClient:
         for field in ("year", "format", "size", "preview", "search_mode"):
             if field in metadata:
                 payload[field] = metadata[field]
+
+        # If search_mode wasn't supplied by the metadata result, derive it from the
+        # source capabilities stored when the request-policy was fetched.  Sources
+        # with browse_results_are_releases=True return release objects directly from
+        # the metadata search (direct_download is the canonical example), so the
+        # download worker must be told to use search_mode="direct" rather than
+        # performing a fresh release search.
+        if "search_mode" not in payload:
+            source_info = self._source_modes.get(source, {})
+            if source_info.get("browse_results_are_releases"):
+                payload["search_mode"] = "direct"
+
         return payload
 
     def _post_request(self, payload: dict, title: str = "") -> bool:

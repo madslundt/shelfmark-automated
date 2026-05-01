@@ -249,6 +249,81 @@ def test_build_download_payload_falls_back_to_provider_fields():
     assert payload["source_id"] == "999"
 
 
+def test_build_download_payload_sets_search_mode_direct_for_browse_results_are_releases():
+    # When source_modes says browse_results_are_releases=True (e.g. direct_download)
+    # and the metadata result has no search_mode, the payload must include search_mode="direct".
+    client = _make_client()
+    client._source_modes = {
+        "direct_download": {"source": "direct_download", "browse_results_are_releases": True},
+    }
+    book = Book("The Martian", "Andy Weir")
+    metadata = {
+        "source": "direct_download",
+        "source_id": "6f269ac1c053eec6158c98faa902fd77",
+        "title": "The Martian",
+        "author": "Andy Weir",
+        "format": "epub",
+    }
+
+    payload = client._build_download_payload(book, metadata)
+
+    assert payload["search_mode"] == "direct"
+
+
+def test_build_download_payload_does_not_override_explicit_search_mode():
+    # If the metadata result already includes search_mode, it takes precedence.
+    client = _make_client()
+    client._source_modes = {
+        "direct_download": {"source": "direct_download", "browse_results_are_releases": True},
+    }
+    book = Book("The Martian", "Andy Weir")
+    metadata = {
+        "source": "direct_download",
+        "source_id": "abc",
+        "search_mode": "universal",
+    }
+
+    payload = client._build_download_payload(book, metadata)
+
+    assert payload["search_mode"] == "universal"
+
+
+def test_build_download_payload_no_search_mode_for_non_release_source():
+    # Sources with browse_results_are_releases=False should not get search_mode="direct".
+    client = _make_client()
+    client._source_modes = {
+        "irc": {"source": "irc", "browse_results_are_releases": False},
+    }
+    book = Book("The Martian", "Andy Weir")
+    metadata = {"source": "irc", "source_id": "some-id"}
+
+    payload = client._build_download_payload(book, metadata)
+
+    assert "search_mode" not in payload
+
+
+def test_fetch_submission_mode_populates_source_modes():
+    client = _make_client()
+    client._no_auth_mode = True
+
+    policy_resp = _mock_resp(200, {
+        "requests_enabled": False,
+        "source_modes": [
+            {"source": "direct_download", "browse_results_are_releases": True,
+             "modes": {"ebook": "download"}},
+            {"source": "irc", "browse_results_are_releases": False,
+             "modes": {"ebook": "download"}},
+        ],
+    })
+
+    with patch.object(client._session, "get", return_value=policy_resp):
+        mode = client._fetch_submission_mode()
+
+    assert mode == "download"
+    assert client._source_modes["direct_download"]["browse_results_are_releases"] is True
+    assert client._source_modes["irc"]["browse_results_are_releases"] is False
+
+
 # ---------------------------------------------------------------------------
 # Download mode — end-to-end
 # ---------------------------------------------------------------------------

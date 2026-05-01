@@ -29,7 +29,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: madslundt/shelfmark-automated
+          images: ${{ vars.DOCKER_REPOSITORY || 'madslundt/shelfmark-automated' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

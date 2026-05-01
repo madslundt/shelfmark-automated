@@ -13,8 +13,8 @@ RUN uv sync --frozen --no-dev
 COPY src/ ./src/
 COPY main.py .
 
-# Run as non-root user
-RUN useradd -m -u 1000 appuser && chown -R appuser /app
+# Run as non-root user; create /data so state.db can be written without a volume mount
+RUN useradd -m -u 1000 appuser && chown -R appuser /app && mkdir -p /data && chown appuser /data
 USER appuser
 
 ENV PATH="/app/.venv/bin:$PATH"

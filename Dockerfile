@@ -7,8 +7,7 @@ WORKDIR /app
 
 # Install production dependencies only (dev group excluded)
 COPY pyproject.toml uv.lock .
-RUN uv export --frozen --no-group dev --no-hashes -o /tmp/requirements.txt && \
-    uv pip install --system -r /tmp/requirements.txt
+RUN uv sync --frozen --no-dev
 
 # Copy application source
 COPY src/ ./src/
@@ -17,6 +16,8 @@ COPY main.py .
 # Run as non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 # -u forces unbuffered stdout so Docker log tailing works immediately
 CMD ["python", "-u", "main.py"]

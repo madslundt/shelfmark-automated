@@ -2,6 +2,8 @@ version: "3.8"
 
 services:
   shelfmark-automated:
+    build:
+      context: .
     image: madslundt/shelfmark-automated:latest
     container_name: shelfmark-automated
     restart: unless-stopped

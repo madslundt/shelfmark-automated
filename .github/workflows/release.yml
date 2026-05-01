@@ -20,7 +20,7 @@ jobs:
           python-version-file: .python-version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8
+        uses: astral-sh/setup-uv@v6
 
       - name: Configure DNS
         run: printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' | sudo tee /etc/resolv.conf

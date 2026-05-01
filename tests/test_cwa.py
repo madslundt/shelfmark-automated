@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from src.cwa import _build_auth_header, _titles_match, is_book_in_library
+from src.cwa import _build_auth_header, _strip_series_suffix, _titles_match, is_book_in_library
 from src.models import Book
 
 _OPDS_FEED_WITH_DARK_MATTER = """<?xml version="1.0"?>
@@ -51,6 +51,37 @@ def test_titles_match_no_false_positive():
     # Searching for "The Martian Chronicles" must NOT match a library entry "The Martian".
     # (We should not say we own "The Martian Chronicles" just because "The Martian" is in library.)
     assert _titles_match("the martian chronicles", "the martian") is False
+
+
+def test_titles_match_reverse_long_subtitle_matches():
+    # CWA: "the innovators dilemma" (3 words) ⊆ our long title → True
+    assert _titles_match(
+        "the innovators dilemma the revolutionary book that will change the way you do business",
+        "the innovators dilemma",
+    ) is True
+
+
+def test_titles_match_reverse_short_result_no_match():
+    # 2-word result "the one" should NOT match longer title to prevent false positives.
+    assert _titles_match("the one dark future 1", "the one") is False
+
+
+def test_strip_series_suffix_comma_hash():
+    assert _strip_series_suffix("Haunting Adeline (Cat and Mouse, #1)") == "Haunting Adeline"
+
+
+def test_strip_series_suffix_no_comma():
+    assert _strip_series_suffix("The One (Dark Future #1)") == "The One"
+
+
+def test_strip_series_suffix_none_present():
+    # Parenthetical without #N should NOT be stripped.
+    assert _strip_series_suffix("The Design of Curiosity (Springer Praxis Books)") == \
+        "The Design of Curiosity (Springer Praxis Books)"
+
+
+def test_strip_series_suffix_no_parens():
+    assert _strip_series_suffix("Dark Matter") == "Dark Matter"
 
 
 def test_titles_match_empty():

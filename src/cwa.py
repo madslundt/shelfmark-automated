@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -30,6 +31,14 @@ _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 # Words ignored when comparing author names (too common to be distinctive)
 _AUTHOR_STOPWORDS: frozenset[str] = frozenset({"the", "a", "an", "of", "and", "&"})
+
+# Matches Goodreads-style series suffixes: "(Series Name, #3)" or "(Series #3)"
+_SERIES_SUFFIX_RE = re.compile(r"\s*\([^)]*#\s*\d+\)\s*$")
+
+
+def _strip_series_suffix(title: str) -> str:
+    """Remove a trailing Goodreads series annotation such as '(Dark Future, #1)'."""
+    return _SERIES_SUFFIX_RE.sub("", title).strip()
 
 
 def _build_auth_header(username: str | None, password: str | None) -> dict[str, str]:
@@ -62,17 +71,24 @@ def _get_opds_entries(xml_text: str) -> list[tuple[str, str]]:
 
 
 def _titles_match(book_title_norm: str, result_title_norm: str) -> bool:
-    """Return True if the book title appears within the result title.
+    """Return True if the two normalised titles refer to the same book.
 
-    Forward-only check: the book's normalised title must be a substring of
-    the result title. This handles exact matches and collections (e.g.
-    "Surrounded by Idiots" found inside a multi-title collection entry).
+    Forward check: book title is a substring of the result title — handles
+    exact matches and collections ("Surrounded by Idiots" inside a multi-title
+    collection entry).
 
-    Deliberately NOT bidirectional: "The Martian" must not match a library
-    entry called "The Martian Chronicles" just because the shorter title is
-    a prefix of the longer one.
+    Reverse check: result title is a substring of the book title — handles
+    books where CWA stores only the base title but Goodreads appends a long
+    subtitle (e.g. CWA has "The Innovator's Dilemma", Goodreads has
+    "The Innovator's Dilemma: The Revolutionary Book..."). Guarded by a
+    3-word minimum on the result title so that short 1-2 word result titles
+    cannot spuriously match any book whose title begins with those words.
     """
-    return book_title_norm in result_title_norm
+    if book_title_norm in result_title_norm:
+        return True
+    if len(result_title_norm.split()) >= 3 and result_title_norm in book_title_norm:
+        return True
+    return False
 
 
 def _authors_compatible(book_author_norm: str, entry_author_norm: str) -> bool:
@@ -151,7 +167,10 @@ def is_book_in_library(
     """
     headers = _build_auth_header(username, password)
 
-    book_title_norm = _normalize(book.title)
+    # Strip Goodreads series suffix "(Series, #N)" before searching and comparing.
+    # CWA stores "The One", not "The One (Dark Future #1)".
+    clean_title = _strip_series_suffix(book.title)
+    book_title_norm = _normalize(clean_title)
     if not book_title_norm:
         return False
 
@@ -159,10 +178,10 @@ def is_book_in_library(
 
     # Build the list of queries to try. The fallback strips a leading article so
     # that "The One" also tries "One" (handles Calibre's sort-title indexing).
-    queries = [book.title]
+    queries = [clean_title]
     for article in ("The ", "A ", "An "):
-        if book.title.startswith(article):
-            queries.append(book.title[len(article):])
+        if clean_title.startswith(article):
+            queries.append(clean_title[len(article):])
             break
 
     for query in queries:

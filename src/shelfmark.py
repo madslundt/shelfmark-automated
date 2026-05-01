@@ -88,6 +88,7 @@ class ShelfmarkClient:
         self._authenticated = False
         self._no_auth_mode = False
         self._auth_time: datetime | None = None
+        self._submission_mode: str | None = None  # "request" or "download"; fetched lazily
 
     # ------------------------------------------------------------------
     # Public API
@@ -96,8 +97,8 @@ class ShelfmarkClient:
     def request_book(self, book: Book) -> bool:
         """Submit a single book download request to Shelfmark.
 
-        Searches Shelfmark's metadata provider first to obtain the
-        provider + provider_id required by POST /api/requests.
+        Checks the request policy first to decide between POST /api/requests
+        (request workflow enabled) and POST /api/releases/download (download mode).
 
         Returns True on success (2xx), False on any failure.
         Logs errors and returns False rather than raising, so callers can
@@ -109,6 +110,9 @@ class ShelfmarkClient:
             log.critical("Shelfmark auth failed: %s", exc)
             return False
 
+        if self._submission_mode is None:
+            self._submission_mode = self._fetch_submission_mode()
+
         metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
         if not metadata:
             log.warning(
@@ -116,16 +120,21 @@ class ShelfmarkClient:
             )
             return False
 
-        payload = self._build_payload(book, metadata)
+        if self._submission_mode == "download":
+            payload = self._build_download_payload(book, metadata)
+            submit_fn = self._post_download
+        else:
+            payload = self._build_request_payload(book, metadata)
+            submit_fn = self._post_request
+
         try:
-            return self._post_request(payload, book.title)
+            return submit_fn(payload, book.title)
         except ShelfmarkAuthError:
-            # Session expired mid-batch — re-authenticate once and retry
             log.info("Shelfmark: session expired mid-request, re-authenticating")
             self._authenticated = False
             try:
                 self._login()
-                return self._post_request(payload, book.title)
+                return submit_fn(payload, book.title)
             except (ShelfmarkAuthError, requests.RequestException) as exc:
                 log.error("Shelfmark: retry after re-auth failed for %r: %s", book.title, exc)
                 return False
@@ -149,35 +158,55 @@ class ShelfmarkClient:
             log.critical("Shelfmark auth failed — skipping all %d requests: %s", len(books), exc)
             return {b.normalized_key(): False for b in books}
 
+        if self._submission_mode is None:
+            self._submission_mode = self._fetch_submission_mode()
+
+        build_payload = (
+            self._build_download_payload
+            if self._submission_mode == "download"
+            else self._build_request_payload
+        )
+        submit_fn = (
+            self._post_download
+            if self._submission_mode == "download"
+            else self._post_request
+        )
+
         # Fetch metadata for all books first
         payloads: list[tuple[Book, dict]] = []
         results: dict[str, bool] = {}
         for book in books:
             metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
             if metadata:
-                payloads.append((book, self._build_payload(book, metadata)))
+                payloads.append((book, build_payload(book, metadata)))
             else:
                 log.warning("Shelfmark: no metadata for %r — skipping", book.title)
 
         if not payloads:
             return results
 
-        # Try batch endpoint
-        batch_results = self._try_batch(payloads)
-        if batch_results is not None:
-            results.update(batch_results)
-            return results
+        # Try batch endpoint (request mode only — download mode has no batch endpoint)
+        if self._submission_mode != "download":
+            batch_results = self._try_batch(payloads)
+            if batch_results is not None:
+                results.update(batch_results)
+                return results
+            log.debug(
+                "Shelfmark: falling back to individual requests for %d books", len(payloads)
+            )
+        else:
+            log.debug(
+                "Shelfmark: download mode — submitting %d books individually", len(payloads)
+            )
 
-        # Fallback: individual requests
-        log.debug("Shelfmark: falling back to individual requests for %d books", len(payloads))
         for book, payload in payloads:
             try:
-                ok = self._post_request(payload, book.title)
+                ok = submit_fn(payload, book.title)
             except ShelfmarkAuthError:
                 self._authenticated = False
                 try:
                     self._login()
-                    ok = self._post_request(payload, book.title)
+                    ok = submit_fn(payload, book.title)
                 except Exception as exc:
                     log.error(
                         "Shelfmark: request failed for %r after re-auth attempt: %s",
@@ -335,7 +364,29 @@ class ShelfmarkClient:
             log.error("Shelfmark: metadata search failed for query %r: %s", query, exc)
             return None
 
-    def _build_payload(self, book: Book, metadata: dict) -> dict:
+    def _fetch_submission_mode(self) -> str:
+        """Return 'download' when the Shelfmark request workflow is disabled, else 'request'.
+
+        Calls GET /api/request-policy and checks the requests_enabled field.
+        Defaults to 'request' on any error so existing behaviour is preserved.
+        """
+        try:
+            resp = self._session.get(f"{self._base_url}/api/request-policy", timeout=10)
+            if resp.ok:
+                policy = resp.json()
+                if not policy.get("requests_enabled", True):
+                    log.info("Shelfmark: request workflow disabled — using download mode")
+                    return "download"
+                log.debug("Shelfmark: request workflow enabled — using request mode")
+                return "request"
+        except (requests.ConnectionError, requests.Timeout, ValueError) as exc:
+            log.warning(
+                "Shelfmark: could not fetch request-policy (%s) — defaulting to request mode",
+                exc,
+            )
+        return "request"
+
+    def _build_request_payload(self, book: Book, metadata: dict) -> dict:
         """Build the POST /api/requests payload for a book using metadata result."""
         book_data: dict = {
             "title": book.title,
@@ -348,6 +399,24 @@ class ShelfmarkClient:
         if isbn:
             book_data["isbn"] = isbn
         return {"book_data": book_data}
+
+    def _build_download_payload(self, book: Book, metadata: dict) -> dict:
+        """Build the POST /api/releases/download payload from a metadata result.
+
+        Maps source/source_id (or falls back to provider/provider_id) and passes
+        through optional release fields (year, format, size, preview, search_mode).
+        """
+        payload: dict = {
+            "source": metadata.get("source") or metadata.get("provider", ""),
+            "source_id": str(metadata.get("source_id") or metadata.get("provider_id", "")),
+            "title": metadata.get("title") or book.title,
+            "author": metadata.get("author") or book.author,
+            "content_type": "ebook",
+        }
+        for field in ("year", "format", "size", "preview", "search_mode"):
+            if field in metadata:
+                payload[field] = metadata[field]
+        return payload
 
     def _post_request(self, payload: dict, title: str = "") -> bool:
         """POST to /api/requests. Returns True on 2xx, raises ShelfmarkAuthError on 401."""
@@ -377,6 +446,30 @@ class ShelfmarkClient:
             return False
         except (requests.ConnectionError, requests.Timeout) as exc:
             log.error("Shelfmark: network error posting request for %r: %s", title, exc)
+            return False
+
+    def _post_download(self, payload: dict, title: str = "") -> bool:
+        """POST to /api/releases/download. Returns True on 2xx, raises ShelfmarkAuthError on 401."""
+        try:
+            resp = self._session.post(
+                f"{self._base_url}/api/releases/download",
+                json=payload,
+                timeout=30,
+            )
+            if resp.status_code == 401:
+                self._authenticated = False
+                raise ShelfmarkAuthError("Session expired (HTTP 401)")
+            if resp.ok:
+                return True
+            log.error(
+                "Shelfmark: POST /api/releases/download returned HTTP %d for %r: %s",
+                resp.status_code,
+                title,
+                resp.text[:300],
+            )
+            return False
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            log.error("Shelfmark: network error downloading %r: %s", title, exc)
             return False
 
     def _try_batch(

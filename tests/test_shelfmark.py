@@ -135,6 +135,21 @@ def test_request_books_batch_falls_back_to_individual():
     assert results[books[0].normalized_key()] is True
 
 
+def test_request_books_batch_no_metadata_skips_book():
+    client = _make_client()
+    book = Book("Unknown Book", "Unknown Author")
+
+    login_resp = _mock_resp(200)
+    metadata_resp = _mock_resp(200, {"books": []})
+
+    with patch.object(client._session, "post", return_value=login_resp), \
+         patch.object(client._session, "get", return_value=metadata_resp):
+        results = client.request_books_batch([book])
+
+    # absent from results — not a request failure, just skipped
+    assert book.normalized_key() not in results
+
+
 def test_request_books_batch_empty():
     client = _make_client()
     assert client.request_books_batch([]) == {}

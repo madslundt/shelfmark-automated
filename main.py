@@ -173,21 +173,27 @@ def sync_once(config: Config, shelfmark_client: ShelfmarkClient | None) -> None:
     results = shelfmark_client.request_books_batch(missing)
     ok_count = sum(1 for v in results.values() if v)
     fail_count = sum(1 for v in results.values() if not v)
+    skip_count = len(missing) - len(results)
 
     if fail_count:
-        failed_books = [b for b in missing if not results.get(b.normalized_key(), True)]
+        failed_books = [b for b in missing if results.get(b.normalized_key()) is False]
         for book in failed_books:
             log.error("FAILED to request: %r", book)
 
     log.info(
-        "Shelfmark: %d submitted successfully, %d failed",
+        "Shelfmark: %d submitted, %d failed, %d skipped (no metadata found)",
         ok_count,
         fail_count,
+        skip_count,
     )
     if ok_count == 0 and fail_count > 0:
         log.error(
             "Shelfmark: all requests failed — check connectivity and credentials "
             "(run with LOG_LEVEL=DEBUG for details)"
+        )
+    if ok_count == 0 and skip_count > 0 and fail_count == 0:
+        log.warning(
+            "Shelfmark: no metadata found for any book — check Shelfmark's metadata provider configuration"
         )
 
 

@@ -120,7 +120,6 @@ class ShelfmarkClient:
                 payloads.append((book, self._build_payload(book, metadata)))
             else:
                 log.warning("Shelfmark: no metadata for %r — skipping", book.title)
-                results[book.normalized_key()] = False
 
         if not payloads:
             return results
@@ -243,7 +242,7 @@ class ShelfmarkClient:
             data = resp.json()
             books = data.get("books", []) if isinstance(data, dict) else data
             if not books:
-                log.debug("Shelfmark: metadata search returned no results for %r", title)
+                log.warning("Shelfmark: metadata search returned no results for %r", title)
                 return None
             return books[0]
         except (requests.ConnectionError, requests.Timeout) as exc:

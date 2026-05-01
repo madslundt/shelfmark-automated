@@ -267,8 +267,8 @@ def sync_once(
     )
     if ok_count == 0 and fail_count > 0:
         log.error(
-            "Shelfmark: all requests failed — check connectivity and credentials "
-            "(run with LOG_LEVEL=DEBUG for details)"
+            "Shelfmark: all requests failed — check the log above for a CRITICAL message "
+            "with the specific error, or verify SHELFMARK_URL is reachable and credentials are correct"
         )
     if ok_count == 0 and skip_count > 0 and fail_count == 0:
         log.warning(

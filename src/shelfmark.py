@@ -178,7 +178,12 @@ class ShelfmarkClient:
                 try:
                     self._login()
                     ok = self._post_request(payload, book.title)
-                except Exception:
+                except Exception as exc:
+                    log.error(
+                        "Shelfmark: request failed for %r after re-auth attempt: %s",
+                        book.title,
+                        exc,
+                    )
                     ok = False
             results[book.normalized_key()] = ok
 

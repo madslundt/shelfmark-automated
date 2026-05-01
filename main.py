@@ -158,7 +158,7 @@ def sync_once(config: Config, shelfmark_client: ShelfmarkClient | None) -> None:
             len(missing),
         )
     else:
-        log.debug("CWA: CWA_URL not set — skipping library check, queuing all books")
+        log.info("CWA: not configured — queuing all %d books", len(all_books))
         missing = list(all_books)
 
     # --- Submit to Shelfmark ---
@@ -184,6 +184,11 @@ def sync_once(config: Config, shelfmark_client: ShelfmarkClient | None) -> None:
         ok_count,
         fail_count,
     )
+    if ok_count == 0 and fail_count > 0:
+        log.error(
+            "Shelfmark: all requests failed — check connectivity and credentials "
+            "(run with LOG_LEVEL=DEBUG for details)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +201,11 @@ def setup_logging(level: str = "INFO") -> None:
         format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
         stream=sys.stdout,
+        force=True,
     )
 
 
 def main() -> None:
-    setup_logging("INFO")
     config = Config.from_env()
     setup_logging(config.log_level)
 

@@ -50,6 +50,8 @@ environment:
   - SYNC_INTERVAL_MIN_SECONDS=120   # random lower bound (default 2 min)
   - SYNC_INTERVAL_MAX_SECONDS=900   # random upper bound (default 15 min)
   - STATE_FILE=/data/state.db       # persist incremental state (mount volume at /data)
+  - PUID=0                          # UID to run as (0 = root, needed if /data mount is root-owned)
+  - PGID=0                          # GID to run as
 ```
 
 > **Note on `.local` hostnames:** `homeassistant.local` and similar mDNS hostnames

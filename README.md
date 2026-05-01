@@ -164,6 +164,8 @@ services:
       - SYNC_INTERVAL_MAX_SECONDS=900
       - STATE_FILE=/data/state.db
       - LOG_LEVEL=INFO
+      - PUID=0   # set to 0 if your volume mount is root-owned
+      - PGID=0
     volumes:
       - shelfmark_state:/data
     networks:
@@ -271,6 +273,7 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `book_data missing required field(s): provider, provider_id` | Shelfmark metadata search failed | Check Shelfmark is reachable; use `LOG_LEVEL=DEBUG` to inspect search results |
 | `Maximum pending requests reached` (HTTP 409) | Shelfmark's queue is full | Normal — remaining books are retried on the next sync cycle |
 | `Hardcover API key is invalid` (HTTP 401) | Wrong or expired API key | Regenerate key at hardcover.app/account/api |
+| `sqlite3.OperationalError: unable to open database file` | `/data` volume is mounted with root-owned permissions; `appuser` can't write | Add `PUID=0` and `PGID=0` to your environment, or ensure the host directory is writable by uid 1000 |
 
 ---
 
@@ -293,6 +296,8 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `STATE_FILE` | No | — | Path to the SQLite state DB for incremental sync. Auto-detected as `/data/state.db` when `/data/` exists. |
 | `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `PUID` | No | `1000` | UID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
+| `PGID` | No | `1000` | GID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
 
 ---
 
@@ -317,6 +322,10 @@ volumes:
 
 Without a volume mount the state file is stored inside the container and lost on restart (graceful fallback to stateless mode).
 
+> **Volume permission note:** If your `/data` mount is root-owned (common with bind mounts on NAS or Portainer),
+> add `PUID=0` and `PGID=0` to your environment so the container runs as root and can write the state file.
+> Named Docker volumes (`shelfmark_state:`) are initialised with correct permissions automatically and don't need this.
+
 ---
 
 ## Project structure
@@ -334,6 +343,7 @@ shelfmark-automated/
 ├── pyproject.toml      # uv project (Python >=3.14)
 ├── .python-version     # Pins Python 3.14
 ├── .env.example        # Local development template
-├── Dockerfile          # python:3.14-slim + uv
+├── Dockerfile          # python:3.14-slim + uv + gosu
+├── entrypoint.sh       # Fixes /data permissions as root, drops to appuser (or PUID/PGID)
 └── docker-compose.yml  # Docker deployment with all environment variables
 ```

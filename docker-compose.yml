@@ -41,6 +41,10 @@ services:
       # Full verification interval in seconds (default: 86400 = 24h). Set to 0 to disable.
       - FULL_SYNC_INTERVAL_SECONDS=${FULL_SYNC_INTERVAL_SECONDS:-86400}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # File-permission control for the /data volume.
+      # Default 1000:1000 (appuser). Set PUID=0 / PGID=0 if your bind mount is root-owned.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
 
     # Uncomment and adjust if CWA / Shelfmark are on an external Docker network:
     # networks:

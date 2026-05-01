@@ -196,17 +196,27 @@ def is_book_in_library(
         for result_title, result_author in entries:
             if not _titles_match(book_title_norm, result_title):
                 continue
-            if not _authors_compatible(book_author_norm, result_author):
+            if _authors_compatible(book_author_norm, result_author):
                 log.debug(
-                    "CWA: title match for %r rejected — author mismatch (wanted %r, got %r)",
+                    "CWA: found %r via query %r (matched title=%r author=%r)",
+                    book.title, query, result_title, result_author,
+                )
+                return True
+            # Author mismatch — but an exact title match on a specific (≥3 significant
+            # words) title is trusted anyway: Calibre edition metadata often differs
+            # from what Goodreads/Hardcover reports (e.g. different editor attribution).
+            sig_words = sum(1 for w in result_title.split() if w not in _AUTHOR_STOPWORDS)
+            if book_title_norm == result_title and sig_words >= 3:
+                log.debug(
+                    "CWA: found %r via exact title match — author mismatch ignored "
+                    "(wanted %r, got %r)",
                     book.title, book_author_norm, result_author,
                 )
-                continue
+                return True
             log.debug(
-                "CWA: found %r via query %r (matched title=%r author=%r)",
-                book.title, query, result_title, result_author,
+                "CWA: title match for %r rejected — author mismatch (wanted %r, got %r)",
+                book.title, book_author_norm, result_author,
             )
-            return True
 
     if not any_succeeded:
         log.warning(

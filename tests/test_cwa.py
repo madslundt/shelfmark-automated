@@ -181,7 +181,8 @@ def test_is_book_in_library_correct_author_matches():
 
 
 def test_is_book_in_library_author_mismatch_not_found():
-    # Title matches but author is clearly different → not counted as owned
+    # Short title matches but author is clearly different → not counted as owned.
+    # "Silence" is only 1 significant word — too common to override author check.
     mock_resp = MagicMock()
     mock_resp.ok = True
     mock_resp.status_code = 200
@@ -190,6 +191,29 @@ def test_is_book_in_library_author_mismatch_not_found():
     book = Book("Silence", "Shusaku Endo")
     with patch("requests.get", return_value=mock_resp):
         assert is_book_in_library(book, "http://cwa:8083", None, None) is False
+
+
+def test_is_book_in_library_exact_long_title_author_mismatch_found():
+    # Exact match on a specific multi-word title overrides author mismatch.
+    # Real-world case: Calibre stores a different edition/editor than Goodreads reports.
+    feed = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Nikola Tesla: Imagination and the Man That Invented the 20th Century</title>
+    <author><name>Mohammad Belal Ansari</name></author>
+  </entry>
+</feed>"""
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = feed
+
+    book = Book(
+        "Nikola Tesla: Imagination and the Man That Invented the 20th Century",
+        "Sean Patrick",
+    )
+    with patch("requests.get", return_value=mock_resp):
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is True
 
 
 def test_is_book_in_library_no_author_in_feed_still_matches():

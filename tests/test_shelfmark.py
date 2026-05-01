@@ -162,8 +162,10 @@ def test_search_metadata_picks_best_not_first():
     client._no_auth_mode = True
 
     metadata_resp = _mock_resp(200, {"books": [
-        {"provider": "hardcover", "provider_id": "999", "title": "The Martian Chronicles", "author": "Ray Bradbury"},
-        {"provider": "hardcover", "provider_id": "42",  "title": "The Martian", "author": "Andy Weir"},
+        {"provider": "hardcover", "provider_id": "999",
+         "title": "The Martian Chronicles", "author": "Ray Bradbury"},
+        {"provider": "hardcover", "provider_id": "42",
+         "title": "The Martian", "author": "Andy Weir"},
     ]})
     request_resp = _mock_resp(200)
 
@@ -184,7 +186,8 @@ def test_search_metadata_uses_isbn_first():
     client._no_auth_mode = True
 
     isbn_metadata_resp = _mock_resp(200, {"books": [
-        {"provider": "hardcover", "provider_id": "42", "title": "The Martian", "author": "Andy Weir"},
+        {"provider": "hardcover", "provider_id": "42",
+         "title": "The Martian", "author": "Andy Weir"},
     ]})
     request_resp = _mock_resp(200)
 
@@ -212,7 +215,8 @@ def test_search_metadata_falls_back_to_title_author_when_isbn_misses():
 
     empty_resp = _mock_resp(200, {"books": []})
     title_author_resp = _mock_resp(200, {"books": [
-        {"provider": "hardcover", "provider_id": "42", "title": "The Martian", "author": "Andy Weir"},
+        {"provider": "hardcover", "provider_id": "42",
+         "title": "The Martian", "author": "Andy Weir"},
     ]})
     request_resp = _mock_resp(200)
 
@@ -232,7 +236,8 @@ def test_search_metadata_low_score_skips_book():
     client._no_auth_mode = True
 
     metadata_resp = _mock_resp(200, {"books": [
-        {"provider": "hardcover", "provider_id": "1", "title": "Completely Different Title", "author": "Someone Else"},
+        {"provider": "hardcover", "provider_id": "1",
+         "title": "Completely Different Title", "author": "Someone Else"},
     ]})
 
     book = Book("The Martian", "Andy Weir")

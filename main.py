@@ -272,7 +272,8 @@ def sync_once(
         )
     if ok_count == 0 and skip_count > 0 and fail_count == 0:
         log.warning(
-            "Shelfmark: no metadata found for any book — check Shelfmark's metadata provider configuration"
+            "Shelfmark: no metadata found for any book — "
+            "check Shelfmark's metadata provider configuration"
         )
 
     if state is not None:

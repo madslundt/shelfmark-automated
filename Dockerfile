@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Install dependencies using uv (layer-cached before source copy)
 COPY pyproject.toml uv.lock .
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-group dev
 
 # Copy application source
 COPY src/ ./src/

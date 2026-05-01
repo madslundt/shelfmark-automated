@@ -8,6 +8,12 @@ Supports three auth modes detected at runtime:
 Request flow (discovered from live testing):
   POST /api/requests requires book_data.provider + book_data.provider_id.
   These are obtained by first calling GET /api/metadata/search?query=<title author>.
+
+Download flow for sources with browse_results_are_releases=True (e.g. direct_download):
+  GET /api/releases?source=<src>&query=<title author>&format=epub&...&sort=relevance
+  returns release objects that include the MD5 source_id and preview cover URL needed
+  by POST /api/releases/download.  Using /api/metadata/search for these sources
+  produces a metadata-level ID that the download worker cannot resolve.
 """
 
 from __future__ import annotations
@@ -28,6 +34,8 @@ _SESSION_TTL = timedelta(days=6, hours=12)
 _METADATA_STOPWORDS: frozenset[str] = frozenset({"the", "a", "an", "of", "and", "&"})
 # Minimum Jaccard-based score for a metadata result to be accepted
 _MIN_METADATA_SCORE: float = 0.3
+# Ebook formats sent to /api/releases (mirrors the Shelfmark UI filter)
+_EBOOK_FORMATS: tuple[str, ...] = ("epub", "mobi", "azw3", "fb2", "djvu", "cbz", "cbr")
 
 
 class ShelfmarkAuthError(Exception):
@@ -114,7 +122,13 @@ class ShelfmarkClient:
         if self._submission_mode is None:
             self._submission_mode = self._fetch_submission_mode()
 
-        metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
+        if self._submission_mode == "download":
+            metadata = self._find_release(book) or self._search_metadata(
+                book.title, book.author, isbn=book.best_isbn()
+            )
+        else:
+            metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
+
         if not metadata:
             log.warning(
                 "Shelfmark: no metadata result for %r — skipping request", book.title
@@ -173,11 +187,16 @@ class ShelfmarkClient:
             else self._post_request
         )
 
-        # Fetch metadata for all books first
+        # Fetch metadata/release info for all books first
         payloads: list[tuple[Book, dict]] = []
         results: dict[str, bool] = {}
         for book in books:
-            metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
+            if self._submission_mode == "download":
+                metadata = self._find_release(book) or self._search_metadata(
+                    book.title, book.author, isbn=book.best_isbn()
+                )
+            else:
+                metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
             if metadata:
                 payloads.append((book, build_payload(book, metadata)))
             else:
@@ -289,6 +308,96 @@ class ShelfmarkClient:
             raise ShelfmarkAuthError(
                 f"Cannot reach Shelfmark at {self._base_url}: {exc}"
             ) from exc
+
+    def _search_releases(self, book: Book, source: str) -> dict | None:
+        """Search /api/releases for a directly downloadable release object.
+
+        Used for sources with browse_results_are_releases=True (e.g. direct_download).
+        The /api/releases endpoint returns release objects containing the MD5 source_id
+        and preview cover URL required by /api/releases/download — unlike
+        /api/metadata/search, which returns book-level metadata with a different ID format.
+
+        Returns the best-scoring release dict (with source injected) or None.
+        """
+        query = f"{book.title} {book.author}".strip()
+        params: list[tuple[str, str]] = [
+            ("source", source),
+            ("query", query),
+            ("sort", "relevance"),
+        ]
+        for fmt in _EBOOK_FORMATS:
+            params.append(("format", fmt))
+
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/api/releases",
+                params=params,
+                timeout=30,
+            )
+            if resp.status_code == 401:
+                self._authenticated = False
+                raise ShelfmarkAuthError("Session expired during releases search (HTTP 401)")
+            if not resp.ok:
+                log.debug(
+                    "Shelfmark releases search returned HTTP %d for query %r",
+                    resp.status_code, query,
+                )
+                return None
+            data = resp.json()
+            releases = (
+                data
+                if isinstance(data, list)
+                else data.get("releases", data.get("results", []))
+            )
+            if not releases:
+                return None
+
+            book_title_words = set(_normalize(book.title).split())
+            book_author_words = {
+                w for w in _normalize(book.author).split() if w not in _METADATA_STOPWORDS
+            }
+            scored = [
+                (r, _score_metadata_result(r, book_title_words, book_author_words))
+                for r in releases
+            ]
+            best_result, best_score = max(scored, key=lambda x: x[1])
+
+            if best_score < _MIN_METADATA_SCORE:
+                log.debug(
+                    "Shelfmark releases search: low confidence for %r "
+                    "(score=%.2f, source=%s)",
+                    book.title, best_score, source,
+                )
+                return None
+
+            # Inject source so _build_download_payload can read it without fallback
+            best_result = {**best_result, "source": source}
+            log.debug(
+                "Shelfmark releases search: %r found via source=%s score=%.2f source_id=%r",
+                book.title, source, best_score, best_result.get("source_id", "?"),
+            )
+            return best_result
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            log.error("Shelfmark releases search failed for %r: %s", query, exc)
+            return None
+
+    def _find_release(self, book: Book) -> dict | None:
+        """Find a directly downloadable release for the given book.
+
+        Iterates over all sources with browse_results_are_releases=True that support
+        ebooks and returns the first successful match.  Returns None when no such
+        source is configured or no confident match is found (caller should fall back
+        to _search_metadata).
+        """
+        for source, source_info in self._source_modes.items():
+            if not source_info.get("browse_results_are_releases"):
+                continue
+            if "ebook" not in source_info.get("supported_content_types", []):
+                continue
+            release = self._search_releases(book, source)
+            if release:
+                return release
+        return None
 
     def _search_metadata(self, title: str, author: str, isbn: str | None = None) -> dict | None:
         """Search Shelfmark's metadata provider and return the best-matching result.

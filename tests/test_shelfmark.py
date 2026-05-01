@@ -302,6 +302,112 @@ def test_build_download_payload_no_search_mode_for_non_release_source():
     assert "search_mode" not in payload
 
 
+def test_search_releases_returns_best_match():
+    client = _make_client()
+    client._no_auth_mode = True
+    book = Book("The Martian", "Andy Weir")
+
+    releases_resp = _mock_resp(200, [
+        {"source_id": "aabbcc", "title": "The Martian Chronicles", "author": "Ray Bradbury",
+         "format": "epub", "size": "1MB"},
+        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
+         "format": "epub", "size": "2MB", "preview": "/api/covers/6f269a"},
+    ])
+
+    with patch.object(client._session, "get", return_value=releases_resp):
+        result = client._search_releases(book, "direct_download")
+
+    assert result is not None
+    assert result["source_id"] == "6f269a"
+    assert result["source"] == "direct_download"
+    assert result["preview"] == "/api/covers/6f269a"
+
+
+def test_search_releases_returns_none_on_low_score():
+    client = _make_client()
+    client._no_auth_mode = True
+    book = Book("The Martian", "Andy Weir")
+
+    releases_resp = _mock_resp(200, [
+        {"source_id": "xyz", "title": "Completely Different Book", "author": "Someone Else"},
+    ])
+
+    with patch.object(client._session, "get", return_value=releases_resp):
+        result = client._search_releases(book, "direct_download")
+
+    assert result is None
+
+
+def test_find_release_uses_browse_results_are_releases_source():
+    client = _make_client()
+    client._no_auth_mode = True
+    client._source_modes = {
+        "direct_download": {
+            "source": "direct_download",
+            "browse_results_are_releases": True,
+            "supported_content_types": ["ebook"],
+        },
+    }
+    book = Book("The Martian", "Andy Weir")
+
+    releases_resp = _mock_resp(200, [
+        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
+         "format": "epub", "preview": "/api/covers/6f269a"},
+    ])
+
+    with patch.object(client._session, "get", return_value=releases_resp):
+        result = client._find_release(book)
+
+    assert result is not None
+    assert result["source_id"] == "6f269a"
+
+
+def test_find_release_skips_non_release_sources():
+    client = _make_client()
+    client._source_modes = {
+        "irc": {"source": "irc", "browse_results_are_releases": False,
+                "supported_content_types": ["ebook"]},
+    }
+    book = Book("The Martian", "Andy Weir")
+
+    result = client._find_release(book)
+
+    assert result is None
+
+
+def test_request_book_download_mode_uses_releases_search():
+    # In download mode, _find_release should be used instead of _search_metadata
+    # when a browse_results_are_releases source is configured.
+    client = _make_client()
+    client._no_auth_mode = True
+    client._submission_mode = "download"
+    client._source_modes = {
+        "direct_download": {
+            "source": "direct_download",
+            "browse_results_are_releases": True,
+            "supported_content_types": ["ebook"],
+        },
+    }
+    book = Book("The Martian", "Andy Weir")
+
+    releases_resp = _mock_resp(200, [
+        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
+         "format": "epub", "preview": "/api/covers/6f269a"},
+    ])
+    download_resp = _mock_resp(200, {"status": "queued"})
+
+    with patch.object(client._session, "get", return_value=releases_resp), \
+         patch.object(client._session, "post", return_value=download_resp) as mock_post:
+        result = client.request_book(book)
+
+    assert result is True
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["source_id"] == "6f269a"
+    assert payload["source"] == "direct_download"
+    assert payload["search_mode"] == "direct"
+    assert payload["preview"] == "/api/covers/6f269a"
+
+
 def test_fetch_submission_mode_populates_source_modes():
     client = _make_client()
     client._no_auth_mode = True

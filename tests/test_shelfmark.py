@@ -302,16 +302,27 @@ def test_build_download_payload_no_search_mode_for_non_release_source():
     assert "search_mode" not in payload
 
 
-def test_search_releases_returns_best_match():
+def _make_release_resp(releases):
+    """Wrap releases in the /api/releases envelope format (matches live API)."""
+    return _mock_resp(200, {"releases": releases, "book": {}, "column_config": {}})
+
+
+def test_search_releases_returns_best_match_and_flattens_extra():
+    # Release objects from /api/releases nest author/year/preview inside "extra".
+    # _search_releases must flatten them to the top level so _build_download_payload
+    # and scoring can access them normally.
     client = _make_client()
     client._no_auth_mode = True
     book = Book("The Martian", "Andy Weir")
 
-    releases_resp = _mock_resp(200, [
-        {"source_id": "aabbcc", "title": "The Martian Chronicles", "author": "Ray Bradbury",
-         "format": "epub", "size": "1MB"},
-        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
-         "format": "epub", "size": "2MB", "preview": "/api/covers/6f269a"},
+    releases_resp = _make_release_resp([
+        {"source_id": "aabbcc", "title": "The Martian Chronicles",
+         "extra": {"author": "Ray Bradbury"}, "format": "epub", "size": "1MB",
+         "source": "direct_download"},
+        {"source_id": "6f269a", "title": "The Martian",
+         "extra": {"author": "Andy Weir", "year": "2011",
+                   "preview": "/api/covers/6f269a"},
+         "format": "epub", "size": "2MB", "source": "direct_download"},
     ])
 
     with patch.object(client._session, "get", return_value=releases_resp):
@@ -320,6 +331,9 @@ def test_search_releases_returns_best_match():
     assert result is not None
     assert result["source_id"] == "6f269a"
     assert result["source"] == "direct_download"
+    # extra fields promoted to top level
+    assert result["author"] == "Andy Weir"
+    assert result["year"] == "2011"
     assert result["preview"] == "/api/covers/6f269a"
 
 
@@ -328,8 +342,9 @@ def test_search_releases_returns_none_on_low_score():
     client._no_auth_mode = True
     book = Book("The Martian", "Andy Weir")
 
-    releases_resp = _mock_resp(200, [
-        {"source_id": "xyz", "title": "Completely Different Book", "author": "Someone Else"},
+    releases_resp = _make_release_resp([
+        {"source_id": "xyz", "title": "Completely Different Book",
+         "extra": {"author": "Someone Else"}, "source": "direct_download"},
     ])
 
     with patch.object(client._session, "get", return_value=releases_resp):
@@ -350,9 +365,10 @@ def test_find_release_uses_browse_results_are_releases_source():
     }
     book = Book("The Martian", "Andy Weir")
 
-    releases_resp = _mock_resp(200, [
-        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
-         "format": "epub", "preview": "/api/covers/6f269a"},
+    releases_resp = _make_release_resp([
+        {"source_id": "6f269a", "title": "The Martian", "format": "epub",
+         "extra": {"author": "Andy Weir", "preview": "/api/covers/6f269a"},
+         "source": "direct_download"},
     ])
 
     with patch.object(client._session, "get", return_value=releases_resp):
@@ -360,6 +376,7 @@ def test_find_release_uses_browse_results_are_releases_source():
 
     assert result is not None
     assert result["source_id"] == "6f269a"
+    assert result["preview"] == "/api/covers/6f269a"
 
 
 def test_find_release_skips_non_release_sources():
@@ -376,8 +393,9 @@ def test_find_release_skips_non_release_sources():
 
 
 def test_request_book_download_mode_uses_releases_search():
-    # In download mode, _find_release should be used instead of _search_metadata
-    # when a browse_results_are_releases source is configured.
+    # In download mode with a browse_results_are_releases source, _find_release
+    # is used and the resulting payload should include the MD5 source_id, preview
+    # (from extra), and search_mode=direct derived from source_modes.
     client = _make_client()
     client._no_auth_mode = True
     client._submission_mode = "download"
@@ -390,9 +408,11 @@ def test_request_book_download_mode_uses_releases_search():
     }
     book = Book("The Martian", "Andy Weir")
 
-    releases_resp = _mock_resp(200, [
-        {"source_id": "6f269a", "title": "The Martian", "author": "Andy Weir",
-         "format": "epub", "preview": "/api/covers/6f269a"},
+    releases_resp = _make_release_resp([
+        {"source_id": "6f269a", "title": "The Martian", "format": "epub",
+         "extra": {"author": "Andy Weir", "year": "2011",
+                   "preview": "/api/covers/6f269a"},
+         "source": "direct_download"},
     ])
     download_resp = _mock_resp(200, {"status": "queued"})
 
@@ -406,6 +426,7 @@ def test_request_book_download_mode_uses_releases_search():
     assert payload["source"] == "direct_download"
     assert payload["search_mode"] == "direct"
     assert payload["preview"] == "/api/covers/6f269a"
+    assert payload["year"] == "2011"
 
 
 def test_fetch_submission_mode_populates_source_modes():

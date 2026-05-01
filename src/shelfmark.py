@@ -370,8 +370,17 @@ class ShelfmarkClient:
                 )
                 return None
 
-            # Inject source so _build_download_payload can read it without fallback
-            best_result = {**best_result, "source": source}
+            # The /api/releases response nests author/year/preview inside an "extra"
+            # sub-object.  Promote those fields to the top level so that
+            # _build_download_payload and _score_metadata_result can access them
+            # with plain dict.get() calls, matching the flat structure expected
+            # elsewhere.  Top-level fields take precedence over extra fields.
+            extra = best_result.get("extra") or {}
+            best_result = {
+                **{k: v for k, v in extra.items() if k not in best_result},
+                **best_result,
+                "source": source,
+            }
             log.debug(
                 "Shelfmark releases search: %r found via source=%s score=%.2f source_id=%r",
                 book.title, source, best_score, best_result.get("source_id", "?"),

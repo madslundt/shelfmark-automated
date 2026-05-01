@@ -138,6 +138,12 @@ def is_book_in_library(
       Author compatibility: at least one significant word in common, or either
       side has no author info (backward compatible with feeds that omit author).
 
+    Calibre stores a "sort title" that strips leading articles ("The One" →
+    "One, The"). Some OPDS implementations index by sort title, so searching
+    for "The One" returns nothing while searching for "One" succeeds. If the
+    full-title search yields no match and the title starts with a common
+    article (The/A/An), a second search without the article is attempted.
+
     Returns:
         True  — at least one matching entry found (book is in library).
         False — no match, OR CWA was unreachable. Conservative: safer to
@@ -150,21 +156,29 @@ def is_book_in_library(
         return False
 
     book_author_norm = _normalize(book.author)
-    result_entries = _search_opds(base_url, book.title, headers)
 
-    for result_title, result_author in result_entries:
-        if not _titles_match(book_title_norm, result_title):
-            continue
-        if not _authors_compatible(book_author_norm, result_author):
+    # Build the list of queries to try. The fallback strips a leading article so
+    # that "The One" also tries "One" (handles Calibre's sort-title indexing).
+    queries = [book.title]
+    for article in ("The ", "A ", "An "):
+        if book.title.startswith(article):
+            queries.append(book.title[len(article):])
+            break
+
+    for query in queries:
+        for result_title, result_author in _search_opds(base_url, query, headers):
+            if not _titles_match(book_title_norm, result_title):
+                continue
+            if not _authors_compatible(book_author_norm, result_author):
+                log.debug(
+                    "CWA: title match for %r rejected — author mismatch (wanted %r, got %r)",
+                    book.title, book_author_norm, result_author,
+                )
+                continue
             log.debug(
-                "CWA: title match for %r rejected — author mismatch (wanted %r, got %r)",
-                book.title, book_author_norm, result_author,
+                "CWA: found %r via query %r (matched title=%r author=%r)",
+                book.title, query, result_title, result_author,
             )
-            continue
-        log.debug(
-            "CWA: found %r (matched title=%r author=%r)",
-            book.title, result_title, result_author,
-        )
-        return True
+            return True
 
     return False

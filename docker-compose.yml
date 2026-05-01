@@ -32,6 +32,10 @@ services:
       - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-3600}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
     # Uncomment and adjust if CWA / Shelfmark are on an external Docker network:
     # networks:
     #   - media_network

@@ -48,6 +48,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Configure Docker daemon DNS
+        run: |
+          printf '{"dns":["8.8.8.8","8.8.4.4"]}\n' | sudo tee /etc/docker/daemon.json
+          sudo service docker restart
+          timeout 30 bash -c 'until docker info &>/dev/null; do sleep 1; done'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -74,5 +80,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-v2
+          cache-to: type=gha,mode=max,scope=docker-v2

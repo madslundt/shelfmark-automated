@@ -1,0 +1,150 @@
+"""Hardcover GraphQL API client — fetches 'Want to Read' books."""
+
+from __future__ import annotations
+
+import logging
+import time
+
+import requests
+
+from .models import Book
+
+log = logging.getLogger(__name__)
+
+HARDCOVER_GRAPHQL_URL = "https://api.hardcover.app/v1/graphql"
+
+_WANT_TO_READ_QUERY = """
+{
+  me {
+    user_books(where: {status_id: {_eq: 1}}) {
+      book {
+        id
+        title
+        contributions {
+          author {
+            name
+          }
+        }
+        default_physical_edition {
+          isbn_10
+          isbn_13
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _with_retry(fn, max_attempts: int = 3, base_delay: float = 1.0):
+    """Call fn() up to max_attempts times with exponential backoff.
+
+    Retries on: ConnectionError, Timeout, HTTP 429, HTTP 5xx.
+    Does NOT retry on other HTTP 4xx (including 401).
+    """
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt == max_attempts - 1:
+                raise
+            delay = base_delay * (2 ** attempt)
+            log.warning("Network error (attempt %d/%d), retrying in %.0fs: %s",
+                        attempt + 1, max_attempts, delay, exc)
+            time.sleep(delay)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status in (429,) or status >= 500:
+                if attempt == max_attempts - 1:
+                    raise
+                delay = base_delay * (2 ** attempt)
+                log.warning("HTTP %d (attempt %d/%d), retrying in %.0fs",
+                            status, attempt + 1, max_attempts, delay)
+                time.sleep(delay)
+            else:
+                raise
+
+
+def fetch_want_to_read(api_key: str) -> list[Book]:
+    """Fetch books with status 'Want to Read' (status_id=1) from Hardcover.
+
+    Args:
+        api_key: Hardcover Bearer token.
+
+    Returns:
+        List of Book objects. May be partial if some entries have incomplete data.
+
+    Raises:
+        requests.HTTPError: On HTTP 401 (invalid API key) or unrecoverable errors.
+        requests.ConnectionError / requests.Timeout: After all retries exhausted.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    })
+
+    def _do_request():
+        resp = session.post(
+            HARDCOVER_GRAPHQL_URL,
+            json={"query": _WANT_TO_READ_QUERY},
+            timeout=30,
+        )
+        if resp.status_code == 401:
+            raise requests.HTTPError(
+                "Hardcover API key is invalid or expired (HTTP 401)",
+                response=resp,
+            )
+        resp.raise_for_status()
+        return resp
+
+    resp = _with_retry(_do_request)
+    data = resp.json()
+
+    if "errors" in data:
+        for err in data["errors"]:
+            log.warning("Hardcover GraphQL error: %s", err.get("message", err))
+
+    books: list[Book] = []
+    try:
+        me_list = data["data"]["me"]
+        if not me_list:
+            log.warning("Hardcover: 'me' returned empty list — check API key / user")
+            return []
+        user_books = me_list[0]["user_books"]
+    except (KeyError, TypeError, IndexError) as exc:
+        log.error("Unexpected Hardcover response structure: %s", exc)
+        return []
+
+    for ub in user_books:
+        try:
+            book_data = ub["book"]
+            title = (book_data.get("title") or "").strip()
+            if not title:
+                continue
+
+            # First contribution author, fall back to empty string
+            contributions = book_data.get("contributions") or []
+            author = ""
+            if contributions:
+                author = (contributions[0].get("author") or {}).get("name", "") or ""
+            author = author.strip()
+
+            edition = book_data.get("default_physical_edition") or {}
+            isbn_10 = (edition.get("isbn_10") or "").strip() or None
+            isbn_13 = (edition.get("isbn_13") or "").strip() or None
+
+            books.append(Book(
+                title=title,
+                author=author,
+                isbn_10=isbn_10,
+                isbn_13=isbn_13,
+                source="hardcover",
+                source_id=str(book_data.get("id", "")),
+            ))
+        except (KeyError, TypeError) as exc:
+            log.warning("Skipping malformed Hardcover entry: %s", exc)
+            continue
+
+    log.info("Hardcover: fetched %d 'Want to Read' books", len(books))
+    return books

@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  shelfmark-automated:
+    image: madslundt/shelfmark-automated:latest
+    container_name: shelfmark-automated
+    restart: unless-stopped
+    environment:
+      # --- Required ---
+      - HARDCOVER_API_KEY=${HARDCOVER_API_KEY}
+      - GOODREADS_RSS_URL=${GOODREADS_RSS_URL}
+
+      # --- CWA (Calibre-Web Automated) ---
+      # Use service name if on the same Docker network, or a full URL otherwise.
+      # Example: http://homeassistant.local:8083
+      - CWA_URL=${CWA_URL:-http://cwa:8083}
+      - CWA_USERNAME=${CWA_USERNAME:-}
+      - CWA_PASSWORD=${CWA_PASSWORD:-}
+
+      # --- Shelfmark ---
+      # Use service name if on the same Docker network, or a full URL otherwise.
+      # Example: http://homeassistant.local:8084
+      - SHELFMARK_URL=${SHELFMARK_URL:-http://shelfmark:8084}
+      # Leave blank if Shelfmark is configured with AUTH_METHOD=none
+      - SHELFMARK_USERNAME=${SHELFMARK_USERNAME:-}
+      - SHELFMARK_PASSWORD=${SHELFMARK_PASSWORD:-}
+
+      # --- Optional ---
+      - HARDCOVER_USER_ID=${HARDCOVER_USER_ID:-}
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-3600}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    # Uncomment and adjust if CWA / Shelfmark are on an external Docker network:
+    # networks:
+    #   - media_network
+
+# networks:
+#   media_network:
+#     external: true

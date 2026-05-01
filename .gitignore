@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ruff
+.ruff_cache/
+
+# Docker
+*.log
+
+# macOS
+.DS_Store
+
+# Editor / tool metadata
+.omc/
+
+# Legacy (replaced by pyproject.toml + uv)
+requirements.txt

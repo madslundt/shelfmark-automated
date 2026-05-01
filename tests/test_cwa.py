@@ -196,6 +196,7 @@ def test_is_book_in_library_author_mismatch_not_found():
 def test_is_book_in_library_exact_long_title_author_mismatch_found():
     # Exact match on a specific multi-word title overrides author mismatch.
     # Real-world case: Calibre stores a different edition/editor than Goodreads reports.
+    # Title has ≥5 significant words so the author check is bypassed.
     feed = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <entry>

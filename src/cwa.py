@@ -202,11 +202,11 @@ def is_book_in_library(
                     book.title, query, result_title, result_author,
                 )
                 return True
-            # Author mismatch — but an exact title match on a specific (≥3 significant
+            # Author mismatch — but an exact title match on a specific (≥5 significant
             # words) title is trusted anyway: Calibre edition metadata often differs
             # from what Goodreads/Hardcover reports (e.g. different editor attribution).
             sig_words = sum(1 for w in result_title.split() if w not in _AUTHOR_STOPWORDS)
-            if book_title_norm == result_title and sig_words >= 3:
+            if book_title_norm == result_title and sig_words >= 5:
                 log.debug(
                     "CWA: found %r via exact title match — author mismatch ignored "
                     "(wanted %r, got %r)",

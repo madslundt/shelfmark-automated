@@ -5,15 +5,19 @@ Syncs your "Want to Read" lists from **Hardcover** and **Goodreads** with your *
 ## How it works
 
 1. Fetches your "Want to Read" books from Hardcover (GraphQL) and Goodreads (RSS)
-2. Checks CWA via OPDS to skip books you already own
-3. Submits missing books to Shelfmark for download
-4. Sleeps and repeats on a configurable interval
+2. Skips books already handled in a previous run *(incremental mode — see below)*
+3. Checks CWA via OPDS to skip books you already own
+4. Submits missing books to Shelfmark for download
+5. Sleeps a random interval and repeats *(default: 2–15 minutes)*
 
 ```
 Hardcover ──┐
-            ├──▶ deduplicate ──▶ CWA check ──▶ Shelfmark request
+            ├──▶ deduplicate ──▶ state filter ──▶ CWA check ──▶ Shelfmark request
 Goodreads ──┘
 ```
+
+Once a day (configurable) a full verification pass re-checks all books regardless of state,
+so nothing is permanently missed if a request fails or a book gets removed from your library.
 
 ---
 
@@ -43,7 +47,9 @@ environment:
   - SHELFMARK_URL=http://192.168.1.100:8084
   - SHELFMARK_USERNAME=your_shelfmark_username  # leave blank if AUTH_METHOD=none
   - SHELFMARK_PASSWORD=your_shelfmark_password
-  - SYNC_INTERVAL_SECONDS=3600
+  - SYNC_INTERVAL_MIN_SECONDS=120   # random lower bound (default 2 min)
+  - SYNC_INTERVAL_MAX_SECONDS=900   # random upper bound (default 15 min)
+  - STATE_FILE=/data/state.db       # persist incremental state (mount volume at /data)
 ```
 
 > **Note on `.local` hostnames:** `homeassistant.local` and similar mDNS hostnames
@@ -154,14 +160,21 @@ services:
       - SHELFMARK_URL=http://shelfmark:8084
       - SHELFMARK_USERNAME=your_shelfmark_username
       - SHELFMARK_PASSWORD=your_shelfmark_password
-      - SYNC_INTERVAL_SECONDS=3600
+      - SYNC_INTERVAL_MIN_SECONDS=120
+      - SYNC_INTERVAL_MAX_SECONDS=900
+      - STATE_FILE=/data/state.db
       - LOG_LEVEL=INFO
+    volumes:
+      - shelfmark_state:/data
     networks:
       - books_network
 
 networks:
   books_network:
     driver: bridge
+
+volumes:
+  shelfmark_state:
 ```
 
 > **Shared volume:** Shelfmark writes downloaded books to `/downloads`, which maps
@@ -274,8 +287,35 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `SHELFMARK_USERNAME` | No | — | Shelfmark login (leave blank if `AUTH_METHOD=none`) |
 | `SHELFMARK_PASSWORD` | No | — | Shelfmark password |
 | `HARDCOVER_USER_ID` | No | — | Hardcover user ID (logging only) |
-| `SYNC_INTERVAL_SECONDS` | No | `3600` | Seconds between sync passes. Set to `0` to run once and exit. |
+| `SYNC_INTERVAL_MIN_SECONDS` | No | `120` | Minimum seconds between sync passes (2 min). |
+| `SYNC_INTERVAL_MAX_SECONDS` | No | `900` | Maximum seconds between sync passes (15 min). Each sleep is a random value in this range. |
+| `SYNC_INTERVAL_SECONDS` | No | — | Legacy fixed interval. Overrides min/max when set to `N > 0`. Set to `0` to run once and exit. |
+| `STATE_FILE` | No | — | Path to the SQLite state DB for incremental sync. Auto-detected as `/data/state.db` when `/data/` exists. |
+| `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+---
+
+## Incremental sync
+
+By default the service runs in stateless mode and re-checks every book on every pass.
+Enable incremental sync by setting `STATE_FILE` and mounting a persistent volume:
+
+```yaml
+# docker-compose.yml
+environment:
+  - STATE_FILE=/data/state.db
+volumes:
+  - shelfmark_state:/data
+```
+
+**How it works:**
+- First run processes all books as normal.
+- Subsequent runs skip books that were already found in the library or successfully submitted.
+- Books that failed or had no metadata found are retried automatically.
+- Every `FULL_SYNC_INTERVAL_SECONDS` (default 24 h) all books are re-checked regardless of state, as a safety net.
+
+Without a volume mount the state file is stored inside the container and lost on restart (graceful fallback to stateless mode).
 
 ---
 
@@ -288,7 +328,8 @@ shelfmark-automated/
 │   ├── hardcover.py    # Hardcover GraphQL client
 │   ├── goodreads.py    # Goodreads RSS parser
 │   ├── cwa.py          # CWA OPDS library checker
-│   └── shelfmark.py    # Shelfmark API client (session auth + metadata search)
+│   ├── shelfmark.py    # Shelfmark API client (session auth + metadata search)
+│   └── state.py        # SQLite state manager for incremental sync
 ├── main.py             # Entry point: config, sync loop, deduplication
 ├── pyproject.toml      # uv project (Python >=3.14)
 ├── .python-version     # Pins Python 3.14

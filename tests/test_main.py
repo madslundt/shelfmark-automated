@@ -19,7 +19,8 @@ def test_config_from_env_fully_set():
     assert config.goodreads_rss_url == "https://www.goodreads.com/review/list_rss/123"
     assert config.cwa_url == "http://cwa:8083"
     assert config.shelfmark_url == "http://shelfmark:8084"
-    assert config.sync_interval_seconds == 3600
+    assert config.sync_interval_min_seconds == 120
+    assert config.sync_interval_max_seconds == 900
     assert config.log_level == "INFO"
 
 
@@ -49,7 +50,8 @@ def test_config_from_env_custom_values():
 
     assert config.cwa_url == "http://192.168.1.10:8083"
     assert config.cwa_username == "admin"
-    assert config.sync_interval_seconds == 1800
+    assert config.sync_interval_min_seconds == 1800
+    assert config.sync_interval_max_seconds == 1800
     assert config.log_level == "DEBUG"
 
 
@@ -95,7 +97,10 @@ def _make_config(**overrides):
         shelfmark_url="http://shelfmark:8084",
         shelfmark_username=None,
         shelfmark_password=None,
-        sync_interval_seconds=0,
+        sync_interval_min_seconds=0,
+        sync_interval_max_seconds=0,
+        state_file=None,
+        full_sync_interval_seconds=0,
         log_level="INFO",
     )
     return Config(**{**defaults, **overrides})

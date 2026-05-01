@@ -29,13 +29,30 @@ services:
 
       # --- Optional ---
       - HARDCOVER_USER_ID=${HARDCOVER_USER_ID:-}
-      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-3600}
+      # Sync interval: random between MIN and MAX seconds to reduce API ban risk.
+      # Defaults: 2–15 minutes. Set both to the same value for a fixed interval.
+      - SYNC_INTERVAL_MIN_SECONDS=${SYNC_INTERVAL_MIN_SECONDS:-120}
+      - SYNC_INTERVAL_MAX_SECONDS=${SYNC_INTERVAL_MAX_SECONDS:-900}
+      # Legacy fixed interval (still supported; sets min=max=N). Use 0 to run once and exit.
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-}
+      # Incremental sync: only process newly added books each run.
+      # Requires a volume mounted at /data to persist state across container restarts (see below).
+      - STATE_FILE=${STATE_FILE:-}
+      # Full verification interval in seconds (default: 86400 = 24h). Set to 0 to disable.
+      - FULL_SYNC_INTERVAL_SECONDS=${FULL_SYNC_INTERVAL_SECONDS:-86400}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
     # Uncomment and adjust if CWA / Shelfmark are on an external Docker network:
     # networks:
     #   - media_network
 
+    # Uncomment to persist incremental sync state across container restarts:
+    # volumes:
+    #   - shelfmark_state:/data
+
 # networks:
 #   media_network:
 #     external: true
+
+# volumes:
+#   shelfmark_state:

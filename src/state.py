@@ -11,8 +11,9 @@ from .models import Book
 
 log = logging.getLogger(__name__)
 
-REASON_IN_LIBRARY = "in_library"
-REASON_SUBMITTED = "submitted"
+REASON_IN_LIBRARY = "in_library"   # legacy value — migrated to REASON_IMPORTED on open
+REASON_IMPORTED   = "imported"
+REASON_SUBMITTED  = "submitted"
 
 
 class StateManager:
@@ -47,6 +48,14 @@ class StateManager:
             (book.normalized_key(),),
         ).fetchone()
         return row is not None
+
+    def is_imported(self, book: Book) -> bool:
+        """Return True only if this book is confirmed present in CWA."""
+        row = self._conn.execute(
+            "SELECT reason FROM handled_books WHERE key = ?",
+            (book.normalized_key(),),
+        ).fetchone()
+        return row is not None and row[0] == REASON_IMPORTED
 
     def mark_handled(self, book: Book, reason: str) -> None:
         """Record book as handled. Deferred — call save() to commit."""
@@ -123,6 +132,12 @@ class StateManager:
                 value TEXT NOT NULL
             );
         """)
+        self._conn.commit()
+        # Migrate legacy "in_library" reason to "imported"
+        self._conn.execute(
+            "UPDATE handled_books SET reason = ? WHERE reason = ?",
+            (REASON_IMPORTED, REASON_IN_LIBRARY),
+        )
         self._conn.commit()
 
     def _count(self) -> int:

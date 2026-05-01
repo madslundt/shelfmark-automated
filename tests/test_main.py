@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from main import Config, deduplicate, sync_once
 from src.models import Book
+from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
 
 
 def test_config_from_env_fully_set():
@@ -212,3 +213,49 @@ def test_sync_once_skips_shelfmark_when_not_configured():
          patch("main.goodreads.fetch_want_to_read", return_value=[]), \
          patch("main.cwa.is_book_in_library", return_value=False):
         sync_once(config, None)  # no shelfmark client
+
+
+# ---------------------------------------------------------------------------
+# force_full: imported books skipped, submitted books rechecked
+# ---------------------------------------------------------------------------
+
+def test_sync_once_force_full_skips_imported_books(tmp_path):
+    """Imported books are excluded even from force_full (daily) runs."""
+    config = _make_config(state_file=str(tmp_path / "state.db"))
+    book = Book("Dark Matter", "Blake Crouch")
+
+    state = StateManager(str(tmp_path / "state.db"))
+    state.mark_handled(book, REASON_IMPORTED)
+    state.save()
+
+    mock_client = MagicMock()
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.goodreads.fetch_want_to_read", return_value=[]), \
+         patch("main.cwa.is_book_in_library") as mock_cwa:
+        sync_once(config, mock_client, state=state, force_full=True)
+
+    mock_cwa.assert_not_called()
+    mock_client.request_books_batch.assert_not_called()
+    state.close()
+
+
+def test_sync_once_force_full_rechecks_submitted_books(tmp_path):
+    """Submitted (but not yet imported) books are re-checked in CWA during force_full."""
+    config = _make_config(state_file=str(tmp_path / "state.db"))
+    book = Book("Project Hail Mary", "Andy Weir")
+
+    state = StateManager(str(tmp_path / "state.db"))
+    state.mark_handled(book, REASON_SUBMITTED)
+    state.save()
+
+    mock_client = MagicMock()
+    mock_client.request_books_batch.return_value = {}
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.goodreads.fetch_want_to_read", return_value=[]), \
+         patch("main.cwa.is_book_in_library", return_value=False) as mock_cwa:
+        sync_once(config, mock_client, state=state, force_full=True)
+
+    mock_cwa.assert_called_once()
+    state.close()

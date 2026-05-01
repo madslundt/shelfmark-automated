@@ -8,7 +8,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from src.models import Book
-from src.state import REASON_IN_LIBRARY, REASON_SUBMITTED, StateManager
+from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,10 +89,10 @@ def test_mark_and_save_submitted(tmp_path):
     state.close()
 
 
-def test_mark_and_save_in_library(tmp_path):
+def test_mark_and_save_imported(tmp_path):
     book = _make_book("Project Hail Mary", "Andy Weir")
     state = _new_state(tmp_path)
-    state.mark_handled(book, REASON_IN_LIBRARY)
+    state.mark_handled(book, REASON_IMPORTED)
     state.save()
     assert state.is_handled(book) is True
     state.close()
@@ -152,7 +152,7 @@ def test_remark_updates_reason(tmp_path):
     state.mark_handled(book, REASON_SUBMITTED)
     state.save()
 
-    state.mark_handled(book, REASON_IN_LIBRARY)
+    state.mark_handled(book, REASON_IMPORTED)
     state.save()
 
     conn = sqlite3.connect(path)
@@ -161,7 +161,7 @@ def test_remark_updates_reason(tmp_path):
         (book.normalized_key(),),
     ).fetchone()
     conn.close()
-    assert row[0] == REASON_IN_LIBRARY
+    assert row[0] == REASON_IMPORTED
     state.close()
 
 
@@ -253,3 +253,69 @@ def test_last_full_sync_persists_across_reload(tmp_path):
     state2.close()
 
     assert ts1 == ts2
+
+
+# ---------------------------------------------------------------------------
+# is_imported
+# ---------------------------------------------------------------------------
+
+def test_is_imported_true(tmp_path):
+    book = _make_book()
+    state = _new_state(tmp_path)
+    state.mark_handled(book, REASON_IMPORTED)
+    state.save()
+    assert state.is_imported(book) is True
+    state.close()
+
+
+def test_is_imported_false_for_submitted(tmp_path):
+    book = _make_book()
+    state = _new_state(tmp_path)
+    state.mark_handled(book, REASON_SUBMITTED)
+    state.save()
+    assert state.is_imported(book) is False
+    state.close()
+
+
+def test_is_imported_false_for_unknown_book(tmp_path):
+    state = _new_state(tmp_path)
+    assert state.is_imported(_make_book()) is False
+    state.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration: "in_library" → "imported"
+# ---------------------------------------------------------------------------
+
+def test_migration_renames_in_library_to_imported(tmp_path):
+    path = str(tmp_path / "state.db")
+    book = _make_book()
+
+    # Manually create DB with legacy "in_library" reason
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE handled_books "
+        "(key TEXT PRIMARY KEY, reason TEXT NOT NULL, handled_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO handled_books (key, reason, handled_at) "
+        "VALUES (?, 'in_library', '2024-01-01T00:00:00')",
+        (book.normalized_key(),),
+    )
+    conn.commit()
+    conn.close()
+
+    # Opening StateManager should migrate the record
+    state = StateManager(path)
+    assert state.is_imported(book) is True
+    assert state.is_handled(book) is True
+
+    # Verify raw DB value was updated
+    raw = state._conn.execute(
+        "SELECT reason FROM handled_books WHERE key = ?", (book.normalized_key(),)
+    ).fetchone()
+    assert raw[0] == REASON_IMPORTED
+    state.close()

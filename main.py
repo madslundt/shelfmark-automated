@@ -19,7 +19,7 @@ from datetime import datetime
 from src import cwa, goodreads, hardcover
 from src.models import Book
 from src.shelfmark import ShelfmarkClient
-from src.state import REASON_IN_LIBRARY, REASON_SUBMITTED, StateManager
+from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
 
 log = logging.getLogger(__name__)
 
@@ -197,7 +197,16 @@ def sync_once(
             log.info("Incremental: skipping %d already-handled book(s)", skipped)
         all_books = new_books
     elif force_full and state is not None:
-        log.info("Full verification sync: checking all %d books", len(all_books))
+        new_books = [b for b in all_books if not state.is_imported(b)]
+        skipped = len(all_books) - len(new_books)
+        if skipped:
+            log.info(
+                "Full verification sync: skipping %d imported book(s), checking %d",
+                skipped, len(new_books),
+            )
+        else:
+            log.info("Full verification sync: checking all %d books", len(all_books))
+        all_books = new_books
 
     if not all_books:
         log.info("No books to process — sync pass complete")
@@ -216,9 +225,9 @@ def sync_once(
                 config.cwa_password,
             )
             if in_library is True:
-                log.info("SKIP (already in library): %r", book)
+                log.info("SKIP (already imported):   %r", book)
                 if state is not None:
-                    state.mark_handled(book, REASON_IN_LIBRARY)
+                    state.mark_handled(book, REASON_IMPORTED)
             elif in_library is None:
                 log.info("SKIP (CWA unreachable):    %r — will retry next cycle", book)
             else:

@@ -215,10 +215,12 @@ def sync_once(
                 config.cwa_username,
                 config.cwa_password,
             )
-            if in_library:
+            if in_library is True:
                 log.info("SKIP (already in library): %r", book)
                 if state is not None:
                     state.mark_handled(book, REASON_IN_LIBRARY)
+            elif in_library is None:
+                log.info("SKIP (CWA unreachable):    %r — will retry next cycle", book)
             else:
                 log.info("QUEUE (not in library):    %r", book)
                 missing.append(book)

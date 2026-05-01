@@ -109,10 +109,12 @@ def _authors_compatible(book_author_norm: str, entry_author_norm: str) -> bool:
 
 def _search_opds(
     base_url: str, query: str, headers: dict[str, str]
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str]] | None:
     """Search the OPDS catalog by query, returning (normalised_title, normalised_author) pairs.
 
-    Returns an empty list on any error (network, auth, parse).
+    Returns:
+        list  — successful response (may be empty if no results).
+        None  — network/timeout error; caller should treat as "unknown" not "not found".
     """
     encoded = urllib.parse.quote(query, safe="")
     url = f"{base_url.rstrip('/')}/opds/search/{encoded}"
@@ -120,7 +122,7 @@ def _search_opds(
         resp = requests.get(
             url,
             headers={**headers, "Accept": "application/atom+xml,application/xml,*/*"},
-            timeout=15,
+            timeout=30,
         )
         if resp.status_code == 401:
             log.error(
@@ -136,7 +138,7 @@ def _search_opds(
         return entries
     except (requests.ConnectionError, requests.Timeout) as exc:
         log.warning("CWA OPDS unreachable during search for %r: %s", query, exc)
-        return []
+        return None
 
 
 def is_book_in_library(
@@ -144,7 +146,7 @@ def is_book_in_library(
     base_url: str,
     username: str | None,
     password: str | None,
-) -> bool:
+) -> bool | None:
     """Check whether the book already exists in the CWA library via OPDS search.
 
     Strategy:
@@ -162,8 +164,9 @@ def is_book_in_library(
 
     Returns:
         True  — at least one matching entry found (book is in library).
-        False — no match, OR CWA was unreachable. Conservative: safer to
-                re-request a duplicate than to silently skip a missing book.
+        False — queries succeeded but no match found (book is not in library).
+        None  — all queries timed out or failed; status unknown. Caller should
+                skip this book for now and retry on the next sync cycle.
     """
     headers = _build_auth_header(username, password)
 
@@ -184,8 +187,13 @@ def is_book_in_library(
             queries.append(clean_title[len(article):])
             break
 
+    any_succeeded = False
     for query in queries:
-        for result_title, result_author in _search_opds(base_url, query, headers):
+        entries = _search_opds(base_url, query, headers)
+        if entries is None:
+            continue  # timeout/network error — try next query
+        any_succeeded = True
+        for result_title, result_author in entries:
             if not _titles_match(book_title_norm, result_title):
                 continue
             if not _authors_compatible(book_author_norm, result_author):
@@ -199,5 +207,11 @@ def is_book_in_library(
                 book.title, query, result_title, result_author,
             )
             return True
+
+    if not any_succeeded:
+        log.warning(
+            "CWA: all OPDS queries timed out for %r — skipping this cycle", book.title
+        )
+        return None
 
     return False

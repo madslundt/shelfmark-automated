@@ -135,10 +135,18 @@ def test_is_book_in_library_collection_match():
         assert is_book_in_library(book, "http://cwa:8083", None, None) is True
 
 
-def test_is_book_in_library_network_error_returns_false():
+def test_is_book_in_library_network_error_returns_none():
+    # Connection error → all queries fail → return None (skip, retry next cycle)
     book = Book("Dark Matter", "Blake Crouch")
     with patch("requests.get", side_effect=requests.ConnectionError("no connection")):
-        assert is_book_in_library(book, "http://cwa:8083", None, None) is False
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is None
+
+
+def test_is_book_in_library_timeout_returns_none():
+    # Timeout → all queries fail → return None (skip, retry next cycle)
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", side_effect=requests.Timeout("timed out")):
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is None
 
 
 def test_is_book_in_library_auth_error_returns_false():

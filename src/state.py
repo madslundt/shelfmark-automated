@@ -25,6 +25,9 @@ class StateManager:
     def __init__(self, db_path: str) -> None:
         self._path = db_path
         self._dirty = False
+        parent = os.path.dirname(db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._conn = sqlite3.connect(db_path)
         self._setup_schema()
         log.info(

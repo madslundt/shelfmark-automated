@@ -80,7 +80,7 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
     """
     session = requests.Session()
     session.headers.update({
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}",
         "Content-Type": "application/json",
     })
 

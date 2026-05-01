@@ -5,9 +5,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# Install dependencies using uv (layer-cached before source copy)
+# Install production dependencies only (dev group excluded)
 COPY pyproject.toml uv.lock .
-RUN uv sync --frozen --no-group dev
+RUN uv export --frozen --no-group dev --no-hashes -o /tmp/requirements.txt && \
+    uv pip install --system -r /tmp/requirements.txt
 
 # Copy application source
 COPY src/ ./src/
@@ -18,4 +19,4 @@ RUN useradd -m -u 1000 appuser && chown -R appuser /app
 USER appuser
 
 # -u forces unbuffered stdout so Docker log tailing works immediately
-CMD ["uv", "run", "python", "-u", "main.py"]
+CMD ["python", "-u", "main.py"]

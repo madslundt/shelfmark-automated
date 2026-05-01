@@ -17,16 +17,51 @@ from datetime import datetime, timedelta
 
 import requests
 
-from .models import Book
+from .models import Book, _normalize
 
 log = logging.getLogger(__name__)
 
 # Re-authenticate 12 hours before the 7-day session expires
 _SESSION_TTL = timedelta(days=6, hours=12)
 
+# Words ignored when comparing author/title fields during metadata scoring
+_METADATA_STOPWORDS: frozenset[str] = frozenset({"the", "a", "an", "of", "and", "&"})
+# Minimum Jaccard-based score for a metadata result to be accepted
+_MIN_METADATA_SCORE: float = 0.3
+
 
 class ShelfmarkAuthError(Exception):
     """Raised when Shelfmark authentication cannot be established."""
+
+
+def _score_metadata_result(result: dict, book: Book) -> float:
+    """Compute a relevance score [0.0–1.0] for a metadata result against a Book.
+
+    Uses Jaccard similarity of word sets: 0.6 * title_score + 0.4 * author_score.
+    Returns 0.5 (neutral) when the result has neither title nor author fields.
+    """
+    result_title = result.get("title", "") or ""
+    result_author = result.get("author", "") or ""
+
+    if not result_title and not result_author:
+        return 0.5
+
+    def _jaccard(a: set[str], b: set[str]) -> float:
+        union = a | b
+        return len(a & b) / len(union) if union else 1.0
+
+    def _sig_words(text: str) -> set[str]:
+        return {w for w in _normalize(text).split() if w not in _METADATA_STOPWORDS}
+
+    title_score = _jaccard(
+        set(_normalize(book.title).split()),
+        set(_normalize(result_title).split()),
+    )
+    book_aw = _sig_words(book.author)
+    res_aw = _sig_words(result_author)
+    author_score = _jaccard(book_aw, res_aw) if (book_aw and res_aw) else 0.5
+
+    return 0.6 * title_score + 0.4 * author_score
 
 
 class ShelfmarkClient:
@@ -71,7 +106,7 @@ class ShelfmarkClient:
             log.critical("Shelfmark auth failed: %s", exc)
             return False
 
-        metadata = self._search_metadata(book.title, book.author)
+        metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
         if not metadata:
             log.warning(
                 "Shelfmark: no metadata result for %r — skipping request", book.title
@@ -115,7 +150,7 @@ class ShelfmarkClient:
         payloads: list[tuple[Book, dict]] = []
         results: dict[str, bool] = {}
         for book in books:
-            metadata = self._search_metadata(book.title, book.author)
+            metadata = self._search_metadata(book.title, book.author, isbn=book.best_isbn())
             if metadata:
                 payloads.append((book, self._build_payload(book, metadata)))
             else:
@@ -217,13 +252,35 @@ class ShelfmarkClient:
                 f"Cannot reach Shelfmark at {self._base_url}: {exc}"
             ) from exc
 
-    def _search_metadata(self, title: str, author: str) -> dict | None:
-        """Search Shelfmark's configured metadata provider for a book.
+    def _search_metadata(self, title: str, author: str, isbn: str | None = None) -> dict | None:
+        """Search Shelfmark's metadata provider and return the best-matching result.
 
-        Returns the first result dict (containing 'provider' and 'provider_id')
-        or None if no results or on error.
+        If an ISBN is provided it is tried first, since ISBN queries return a
+        precise match without needing title/author scoring. Falls back to a
+        title + author query when the ISBN search yields no results.
+
+        Returns None if no confident match is found (logs a warning).
         """
-        query = f"{title} {author}".strip()
+        book_obj = Book(title=title, author=author or "")
+
+        if isbn:
+            result = self._run_metadata_query(isbn, book_obj)
+            if result:
+                log.debug("Shelfmark: metadata found via ISBN %s for %r", isbn, title)
+                return result
+
+        result = self._run_metadata_query(f"{title} {author}".strip(), book_obj)
+        if result is None:
+            log.warning("Shelfmark: no confident metadata match for %r — skipping request", title)
+        return result
+
+    def _run_metadata_query(self, query: str, book: Book) -> dict | None:
+        """Execute one /api/metadata/search query and return the best-scored result.
+
+        Returns None (without warning) if the query produces no results or if
+        the best match scores below _MIN_METADATA_SCORE. Raises ShelfmarkAuthError
+        on HTTP 401 so the caller can re-authenticate.
+        """
         try:
             resp = self._session.get(
                 f"{self._base_url}/api/metadata/search",
@@ -234,19 +291,33 @@ class ShelfmarkClient:
                 self._authenticated = False
                 raise ShelfmarkAuthError("Session expired during metadata search (HTTP 401)")
             if not resp.ok:
-                log.warning(
-                    "Shelfmark metadata search returned HTTP %d for %r",
-                    resp.status_code, title,
+                log.debug(
+                    "Shelfmark metadata search returned HTTP %d for query %r",
+                    resp.status_code, query,
                 )
                 return None
             data = resp.json()
             books = data.get("books", []) if isinstance(data, dict) else data
             if not books:
-                log.warning("Shelfmark: metadata search returned no results for %r", title)
                 return None
-            return books[0]
+
+            scored = [(b, _score_metadata_result(b, book)) for b in books]
+            best_result, best_score = max(scored, key=lambda x: x[1])
+
+            if best_score < _MIN_METADATA_SCORE:
+                log.debug(
+                    "Shelfmark: query %r low confidence (score=%.2f, matched title=%r)",
+                    query, best_score, best_result.get("title", "?"),
+                )
+                return None
+
+            log.debug(
+                "Shelfmark: query %r → result title=%r author=%r score=%.2f",
+                query, best_result.get("title", "?"), best_result.get("author", "?"), best_score,
+            )
+            return best_result
         except (requests.ConnectionError, requests.Timeout) as exc:
-            log.error("Shelfmark: metadata search failed for %r: %s", title, exc)
+            log.error("Shelfmark: metadata search failed for query %r: %s", query, exc)
             return None
 
     def _build_payload(self, book: Book, metadata: dict) -> dict:

@@ -19,6 +19,22 @@ _OPDS_COLLECTION = """<?xml version="1.0"?>
   <entry><title>Surrounded by Idiots &amp; Surrounded by Psychopaths Collection</title></entry>
 </feed>"""
 
+_OPDS_FEED_WITH_AUTHOR = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Dark Matter</title>
+    <author><name>Blake Crouch</name></author>
+  </entry>
+</feed>"""
+
+_OPDS_FEED_SAME_TITLE_DIFF_AUTHOR = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Silence</title>
+    <author><name>Erling Kagge</name></author>
+  </entry>
+</feed>"""
+
 
 def test_titles_match_exact():
     assert _titles_match("dark matter", "dark matter") is True
@@ -111,3 +127,39 @@ def test_is_book_in_library_empty_title_returns_false():
         result = is_book_in_library(book, "http://cwa:8083", None, None)
     assert result is False
     mock_get.assert_not_called()
+
+
+def test_is_book_in_library_correct_author_matches():
+    # Feed includes <author> — title + author both match → found
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_WITH_AUTHOR
+
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", return_value=mock_resp):
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is True
+
+
+def test_is_book_in_library_author_mismatch_not_found():
+    # Title matches but author is clearly different → not counted as owned
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_SAME_TITLE_DIFF_AUTHOR
+
+    book = Book("Silence", "Shusaku Endo")
+    with patch("requests.get", return_value=mock_resp):
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is False
+
+
+def test_is_book_in_library_no_author_in_feed_still_matches():
+    # Feed without <author> elements — backward compatible, title match alone suffices
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_WITH_DARK_MATTER  # no <author> tags
+
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", return_value=mock_resp):
+        assert is_book_in_library(book, "http://cwa:8083", None, None) is True

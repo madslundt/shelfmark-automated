@@ -153,3 +153,92 @@ def test_request_books_batch_no_metadata_skips_book():
 def test_request_books_batch_empty():
     client = _make_client()
     assert client.request_books_batch([]) == {}
+
+
+def test_search_metadata_picks_best_not_first():
+    # First result is a poor match; second result is the correct book.
+    # The scorer should return the second result's provider_id.
+    client = _make_client()
+    client._no_auth_mode = True
+
+    metadata_resp = _mock_resp(200, {"books": [
+        {"provider": "hardcover", "provider_id": "999", "title": "The Martian Chronicles", "author": "Ray Bradbury"},
+        {"provider": "hardcover", "provider_id": "42",  "title": "The Martian", "author": "Andy Weir"},
+    ]})
+    request_resp = _mock_resp(200)
+
+    book = Book("The Martian", "Andy Weir")
+    with patch.object(client._session, "get", return_value=metadata_resp), \
+         patch.object(client._session, "post", return_value=request_resp) as mock_post:
+        result = client.request_book(book)
+
+    assert result is True
+    post_payload = mock_post.call_args.kwargs["json"]
+    assert post_payload["book_data"]["provider_id"] == "42"
+
+
+def test_search_metadata_uses_isbn_first():
+    # When a book has an ISBN, the first GET should query by ISBN.
+    # If the ISBN query returns a good result, no title+author query is made.
+    client = _make_client()
+    client._no_auth_mode = True
+
+    isbn_metadata_resp = _mock_resp(200, {"books": [
+        {"provider": "hardcover", "provider_id": "42", "title": "The Martian", "author": "Andy Weir"},
+    ]})
+    request_resp = _mock_resp(200)
+
+    book = Book("The Martian", "Andy Weir", isbn_10="1250364418")
+    get_calls = []
+
+    def fake_get(url, **kwargs):
+        get_calls.append(kwargs.get("params", {}).get("query", ""))
+        return isbn_metadata_resp
+
+    with patch.object(client._session, "get", side_effect=fake_get), \
+         patch.object(client._session, "post", return_value=request_resp):
+        result = client.request_book(book)
+
+    assert result is True
+    # Only one GET — the ISBN query succeeded, no fallback needed
+    assert len(get_calls) == 1
+    assert get_calls[0] == "1250364418"
+
+
+def test_search_metadata_falls_back_to_title_author_when_isbn_misses():
+    # ISBN query returns empty; fallback title+author query succeeds.
+    client = _make_client()
+    client._no_auth_mode = True
+
+    empty_resp = _mock_resp(200, {"books": []})
+    title_author_resp = _mock_resp(200, {"books": [
+        {"provider": "hardcover", "provider_id": "42", "title": "The Martian", "author": "Andy Weir"},
+    ]})
+    request_resp = _mock_resp(200)
+
+    book = Book("The Martian", "Andy Weir", isbn_10="1250364418")
+    responses = [empty_resp, title_author_resp]
+
+    with patch.object(client._session, "get", side_effect=responses), \
+         patch.object(client._session, "post", return_value=request_resp):
+        result = client.request_book(book)
+
+    assert result is True
+
+
+def test_search_metadata_low_score_skips_book():
+    # Metadata returns a completely unrelated book — score below threshold → skip.
+    client = _make_client()
+    client._no_auth_mode = True
+
+    metadata_resp = _mock_resp(200, {"books": [
+        {"provider": "hardcover", "provider_id": "1", "title": "Completely Different Title", "author": "Someone Else"},
+    ]})
+
+    book = Book("The Martian", "Andy Weir")
+    with patch.object(client._session, "get", return_value=metadata_resp), \
+         patch.object(client._session, "post") as mock_post:
+        result = client.request_book(book)
+
+    assert result is False
+    mock_post.assert_not_called()

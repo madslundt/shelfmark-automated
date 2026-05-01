@@ -200,7 +200,7 @@ class ShelfmarkClient:
             if metadata:
                 payloads.append((book, build_payload(book, metadata)))
             else:
-                log.warning("Shelfmark: no metadata for %r — skipping", book.title)
+                log.debug("Shelfmark: no metadata for %r — skipping", book.title)
 
         if not payloads:
             return results
@@ -427,7 +427,7 @@ class ShelfmarkClient:
 
         result = self._run_metadata_query(f"{title} {author}".strip(), book_obj)
         if result is None:
-            log.warning("Shelfmark: no confident metadata match for %r — skipping request", title)
+            log.debug("Shelfmark: no confident metadata match for %r — skipping request", title)
         return result
 
     def _run_metadata_query(self, query: str, book: Book) -> dict | None:

@@ -194,22 +194,22 @@ def sync_once(
         new_books = [b for b in all_books if not state.is_handled(b)]
         skipped = len(all_books) - len(new_books)
         if skipped:
-            log.info("Incremental: skipping %d already-handled book(s)", skipped)
+            log.debug("Incremental: skipping %d already-handled book(s)", skipped)
         all_books = new_books
     elif force_full and state is not None:
         new_books = [b for b in all_books if not state.is_imported(b)]
         skipped = len(all_books) - len(new_books)
         if skipped:
-            log.info(
+            log.debug(
                 "Full verification sync: skipping %d imported book(s), checking %d",
                 skipped, len(new_books),
             )
         else:
-            log.info("Full verification sync: checking all %d books", len(all_books))
+            log.debug("Full verification sync: checking all %d books", len(all_books))
         all_books = new_books
 
     if not all_books:
-        log.info("No books to process — sync pass complete")
+        log.debug("No books to process — sync pass complete")
         if state is not None:
             state.save()
         return
@@ -225,7 +225,7 @@ def sync_once(
                 config.cwa_password,
             )
             if in_library is True:
-                log.info("SKIP (already imported):   %r", book)
+                log.debug("SKIP (already imported):   %r", book)
                 if state is not None:
                     state.mark_handled(book, REASON_IMPORTED)
             elif in_library is None:
@@ -233,24 +233,24 @@ def sync_once(
             else:
                 log.info("QUEUE (not in library):    %r", book)
                 missing.append(book)
-        log.info(
+        log.debug(
             "Library check: %d already owned, %d to request",
             len(all_books) - len(missing),
             len(missing),
         )
     else:
-        log.info("CWA: not configured — queuing all %d books", len(all_books))
+        log.debug("CWA: not configured — queuing all %d books", len(all_books))
         missing = list(all_books)
 
     # --- Submit to Shelfmark ---
     if not missing:
-        log.info("Nothing to request — sync pass complete")
+        log.debug("Nothing to request — sync pass complete")
         if state is not None:
             state.save()
         return
 
     if not shelfmark_client:
-        log.info("Shelfmark: SHELFMARK_URL not set — skipping submission (%d books)", len(missing))
+        log.debug("Shelfmark: SHELFMARK_URL not set — skipping submission (%d books)", len(missing))
         if state is not None:
             state.save()
         return
@@ -283,7 +283,7 @@ def sync_once(
             "credentials are correct"
         )
     if ok_count == 0 and skip_count > 0 and fail_count == 0:
-        log.warning(
+        log.debug(
             "Shelfmark: no metadata found for any book — "
             "check Shelfmark's metadata provider configuration"
         )

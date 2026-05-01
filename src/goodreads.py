@@ -15,7 +15,11 @@ log = logging.getLogger(__name__)
 
 
 def _with_retry(fn, max_attempts: int = 3, base_delay: float = 1.0):
-    """Retry fn() with exponential backoff on network errors."""
+    """Retry fn() with exponential backoff on network errors and transient HTTP errors.
+
+    Retries on: ConnectionError, Timeout, HTTP 429, HTTP 5xx.
+    Does NOT retry on other HTTP 4xx.
+    """
     for attempt in range(max_attempts):
         try:
             return fn()
@@ -26,6 +30,17 @@ def _with_retry(fn, max_attempts: int = 3, base_delay: float = 1.0):
             log.warning("Network error (attempt %d/%d), retrying in %.0fs: %s",
                         attempt + 1, max_attempts, delay, exc)
             time.sleep(delay)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status in (429,) or status >= 500:
+                if attempt == max_attempts - 1:
+                    raise
+                delay = base_delay * (2 ** attempt)
+                log.warning("HTTP %d (attempt %d/%d), retrying in %.0fs",
+                            status, attempt + 1, max_attempts, delay)
+                time.sleep(delay)
+            else:
+                raise
 
 
 def _ensure_to_read_shelf(url: str) -> str:

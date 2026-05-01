@@ -40,16 +40,6 @@ def _build_auth_header(username: str | None, password: str | None) -> dict[str, 
     return {}
 
 
-def _count_opds_entries(xml_text: str) -> int:
-    """Parse OPDS/Atom XML and return the number of <entry> elements."""
-    try:
-        root = ET.fromstring(xml_text)
-        return len(root.findall("atom:entry", _ATOM_NS))
-    except ET.ParseError as exc:
-        log.debug("OPDS XML parse error: %s", exc)
-        return 0
-
-
 def _get_opds_entries(xml_text: str) -> list[tuple[str, str]]:
     """Return (normalized_title, normalized_author) pairs for all <entry> elements.
 
@@ -69,11 +59,6 @@ def _get_opds_entries(xml_text: str) -> list[tuple[str, str]]:
     except ET.ParseError as exc:
         log.debug("OPDS XML parse error: %s", exc)
         return []
-
-
-def _get_opds_entry_titles(xml_text: str) -> list[str]:
-    """Return normalized titles of all <entry> elements in an OPDS feed."""
-    return [title for title, _author in _get_opds_entries(xml_text)]
 
 
 def _titles_match(book_title_norm: str, result_title_norm: str) -> bool:

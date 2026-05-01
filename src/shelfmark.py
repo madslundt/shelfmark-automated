@@ -34,11 +34,18 @@ class ShelfmarkAuthError(Exception):
     """Raised when Shelfmark authentication cannot be established."""
 
 
-def _score_metadata_result(result: dict, book: Book) -> float:
+def _score_metadata_result(
+    result: dict,
+    book_title_words: set[str],
+    book_author_words: set[str],
+) -> float:
     """Compute a relevance score [0.0–1.0] for a metadata result against a Book.
 
     Uses Jaccard similarity of word sets: 0.6 * title_score + 0.4 * author_score.
     Returns 0.5 (neutral) when the result has neither title nor author fields.
+
+    book_title_words and book_author_words are precomputed by the caller to avoid
+    redundant normalization when scoring multiple results for the same book.
     """
     result_title = result.get("title", "") or ""
     result_author = result.get("author", "") or ""
@@ -50,16 +57,12 @@ def _score_metadata_result(result: dict, book: Book) -> float:
         union = a | b
         return len(a & b) / len(union) if union else 1.0
 
-    def _sig_words(text: str) -> set[str]:
-        return {w for w in _normalize(text).split() if w not in _METADATA_STOPWORDS}
-
     title_score = _jaccard(
-        set(_normalize(book.title).split()),
+        book_title_words,
         set(_normalize(result_title).split()),
     )
-    book_aw = _sig_words(book.author)
-    res_aw = _sig_words(result_author)
-    author_score = _jaccard(book_aw, res_aw) if (book_aw and res_aw) else 0.5
+    res_aw = {w for w in _normalize(result_author).split() if w not in _METADATA_STOPWORDS}
+    author_score = _jaccard(book_author_words, res_aw) if (book_author_words and res_aw) else 0.5
 
     return 0.6 * title_score + 0.4 * author_score
 
@@ -301,7 +304,14 @@ class ShelfmarkClient:
             if not books:
                 return None
 
-            scored = [(b, _score_metadata_result(b, book)) for b in books]
+            book_title_words = set(_normalize(book.title).split())
+            book_author_words = {
+                w for w in _normalize(book.author).split() if w not in _METADATA_STOPWORDS
+            }
+            scored = [
+                (b, _score_metadata_result(b, book_title_words, book_author_words))
+                for b in books
+            ]
             best_result, best_score = max(scored, key=lambda x: x[1])
 
             if best_score < _MIN_METADATA_SCORE:

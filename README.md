@@ -374,6 +374,50 @@ Read status sync: 'Unknown Title' not found in CWA — skipping
 
 ---
 
+## Metadata correction
+
+When `FIX_METADATA=true` (the default), the service automatically corrects wrong author metadata in CWA for books found on Hardcover or Goodreads. It runs on the same schedule as read-status sync.
+
+### What it does
+
+- Fetches books from your **Read** and **Want to Read** shelves on Hardcover and Goodreads
+- Searches CWA via OPDS for each book by title
+- When a title matches but the stored author differs, it writes the correct author back to CWA via `POST /edit/<id>`
+
+### Prerequisite: enable "Edit books" in CWA
+
+> **Before this feature will work**, you must grant your CWA user the **Edit books** permission:
+>
+> 1. Log in to CWA as an admin
+> 2. Go to **Admin → Edit User** and select your account
+> 3. Enable the **Edit books** checkbox and save
+>
+> Without this permission, `POST /edit/<id>` is rejected and no metadata will be updated.
+
+### When it runs
+
+Runs on the same schedule as `READ_STATUS_SYNC_INTERVAL_SECONDS` (default: once per day). Set `FIX_METADATA=false` to disable it entirely without affecting read-status sync.
+
+### Logging
+
+At the default `INFO` level:
+```
+Metadata fix: book 42 'All The Lies' — author corrected from 'jennifer harvey' to 'Nicola Sanders'
+Metadata fix: 1 corrected, 0 failed
+```
+
+Set `LOG_LEVEL=DEBUG` for per-book detail including books where no mismatch was found.
+
+### Common issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Metadata fix: 0 corrected` every run | No mismatches found, or books not yet in library | Check `LOG_LEVEL=DEBUG` output; confirm books exist in CWA |
+| `Metadata fix: failed to update book <id>` | CWA returned HTTP 403 | Enable **Edit books** permission for your CWA user (see prerequisite above) |
+| Author not updating despite `200 OK` | Field name mismatch with your CWA version | Set `LOG_LEVEL=DEBUG` and check the form fields in the edit page |
+
+---
+
 ## Incremental sync
 
 By default the service runs in stateless mode and re-checks every book on every pass.

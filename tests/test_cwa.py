@@ -462,7 +462,7 @@ def test_update_book_author_success():
 
     assert result is True
     call_data = mock_post.call_args
-    assert call_data[1]["data"]["author_name"] == "Nicola Sanders"
+    assert call_data[1]["data"]["authors"] == "Nicola Sanders"
     assert call_data[1]["data"]["title"] == "All the Lies We Told"
 
 

@@ -439,13 +439,20 @@ class CWAClient:
                 book_id, ajax_resp.status_code,
             )
             return False
-        current = ajax_resp.json()
+        try:
+            current = ajax_resp.json()
+        except Exception:
+            log.warning(
+                "CWA: /ajax/book/%d returned non-JSON body (empty or HTML) — skipping", book_id
+            )
+            return False
 
-        # Fetch the edit page to get a fresh CSRF token.
-        edit_get = self._session.get(f"{self._base_url}/edit/{book_id}")
+        # Fetch the admin edit page to get a fresh CSRF token and form structure.
+        edit_url = f"{self._base_url}/admin/book/{book_id}"
+        edit_get = self._session.get(edit_url)
         if not edit_get.ok:
             log.warning(
-                "CWA: edit page for book %d returned HTTP %d — "
+                "CWA: admin edit page for book %d returned HTTP %d — "
                 "ensure 'Edit books' permission is enabled for your CWA account",
                 book_id, edit_get.status_code,
             )
@@ -456,13 +463,11 @@ class CWAClient:
         csrf = m.group(1) if m else self._csrf_token
 
         # Build the edit form payload with the corrected author.
-        # NOTE: verify field names against live GET /edit/<id> response if POST silently
-        # ignores the update — Calibre-Web field names may vary by version.
         form: dict[str, str] = {
             "book_id": str(book_id),
             "csrf_token": csrf,
             "title": current.get("title", ""),
-            "author_name": correct_author,
+            "authors": correct_author,
             "pubdate": (current.get("pubdate") or "")[:10],  # YYYY-MM-DD only
             "publisher": (current.get("publishers") or [""])[0],
             "tags": ", ".join(current.get("tags") or []),
@@ -470,11 +475,11 @@ class CWAClient:
             "series_index": str(current.get("series_index") or ""),
             "comments": current.get("comments") or "",
             "languages": ", ".join(current.get("languages") or []),
-            "rating": str(int((current.get("rating") or 0) / 2)),  # 0-10 → 0-5 stars
+            "rating": str(int(float(current.get("rating") or 0) / 2)),  # 0-10 → 0-5 stars
         }
 
         post_resp = self._session.post(
-            f"{self._base_url}/edit/{book_id}",
+            edit_url,
             data=form,
             headers={"X-CSRFToken": csrf, "X-Requested-With": "XMLHttpRequest"},
         )

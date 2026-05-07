@@ -508,6 +508,40 @@ def test_sync_metadata_once_skips_no_mismatch():
     client.update_book_author.assert_not_called()
 
 
+def test_sync_metadata_once_retries_failed_updates():
+    """Failed updates are retried up to 3 times."""
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("All The Lies", "Nicola Sanders")
+    # Fail twice, succeed on third attempt
+    client.update_book_author.side_effect = [False, False, True]
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")), \
+         patch("main.time.sleep"):
+        sync_metadata_once(config, client)
+
+    assert client.update_book_author.call_count == 3
+
+
+def test_sync_metadata_once_gives_up_after_three_retries():
+    """After 3 retries the book is logged as permanently failed."""
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("All The Lies", "Nicola Sanders")
+    client.update_book_author.return_value = False  # always fails
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")), \
+         patch("main.time.sleep"):
+        sync_metadata_once(config, client)
+
+    # 1 initial attempt + 3 retries = 4 total calls
+    assert client.update_book_author.call_count == 4
+
+
 # ---------------------------------------------------------------------------
 # Config: sync_on_start
 # ---------------------------------------------------------------------------

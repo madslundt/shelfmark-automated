@@ -444,7 +444,7 @@ def sync_metadata_once(
     log.debug("Metadata fix: checking %d unique books", len(all_books))
 
     ok_count = 0
-    fail_count = 0
+    retry_queue: list[tuple[Book, int, str]] = []
     for book in all_books:
         result = cwa.find_mismatched_author(
             book, config.cwa_url, config.cwa_username, config.cwa_password
@@ -464,10 +464,37 @@ def sync_metadata_once(
                 book_id, book.title, wrong_author, book.author,
             )
         else:
-            fail_count += 1
-            log.warning("Metadata fix: failed to update book %d %r", book_id, book.title)
+            log.warning("Metadata fix: failed book %d %r — will retry", book_id, book.title)
+            retry_queue.append((book, book_id, wrong_author))
 
-    log.info("Metadata fix: %d corrected, %d failed", ok_count, fail_count)
+    for attempt in range(1, 4):
+        if not retry_queue:
+            break
+        log.info(
+            "Metadata fix: retrying %d failed book(s) (attempt %d/3)",
+            len(retry_queue), attempt,
+        )
+        time.sleep(5)
+        still_failing: list[tuple[Book, int, str]] = []
+        for book, book_id, wrong_author in retry_queue:
+            try:
+                ok = cwa_client.update_book_author(book_id, book.author)
+            except CWAAuthError as exc:
+                log.error("Metadata fix: CWA auth failed during retry — stopping: %s", exc)
+                retry_queue = still_failing
+                break
+            if ok:
+                ok_count += 1
+                log.info(
+                    "Metadata fix: book %d %r — author corrected on retry %d from %r to %r",
+                    book_id, book.title, attempt, wrong_author, book.author,
+                )
+            else:
+                still_failing.append((book, book_id, wrong_author))
+        else:
+            retry_queue = still_failing
+
+    log.info("Metadata fix: %d corrected, %d failed after retries", ok_count, len(retry_queue))
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.goodreads import _ensure_to_read_shelf, fetch_want_to_read
+from src.goodreads import _ensure_to_read_shelf, _force_shelf, fetch_read, fetch_want_to_read
 
 
 def test_ensure_to_read_shelf_appends():
@@ -115,3 +115,62 @@ def test_fetch_want_to_read_network_error():
     with patch("requests.get", side_effect=requests.ConnectionError("no connection")):
         with pytest.raises(requests.ConnectionError):
             fetch_want_to_read("https://www.goodreads.com/review/list_rss/123456")
+
+
+def test_force_shelf_adds_when_missing():
+    url = "https://www.goodreads.com/review/list_rss/12345"
+    result = _force_shelf(url, "read")
+    assert "shelf=read" in result
+
+
+def test_force_shelf_replaces_existing():
+    url = "https://www.goodreads.com/review/list_rss/12345?shelf=to-read"
+    result = _force_shelf(url, "read")
+    assert "shelf=read" in result
+    assert "to-read" not in result
+
+
+def test_fetch_read_uses_shelf_read():
+    """fetch_read() must request shelf=read, not shelf=to-read."""
+    captured = {}
+
+    def _capture_get(url, timeout=None, headers=None):
+        captured["url"] = url
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = """<?xml version="1.0"?>
+<rss version="2.0"><channel></channel></rss>"""
+        return mock_resp
+
+    with patch("src.goodreads.requests.get", side_effect=_capture_get):
+        fetch_read("https://www.goodreads.com/review/list_rss/12345")
+
+    assert "shelf=read" in captured["url"]
+    assert "to-read" not in captured["url"]
+
+
+def test_fetch_read_returns_books():
+    rss = """<?xml version="1.0"?>
+<rss version="2.0"
+     xmlns:gr="http://www.goodreads.com/gr/item/">
+  <channel>
+    <item>
+      <title>The Martian</title>
+      <gr:author_name>Andy Weir</gr:author_name>
+      <gr:isbn>0553418025</gr:isbn>
+      <gr:book_id>18007564</gr:book_id>
+    </item>
+  </channel>
+</rss>"""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.text = rss
+
+    with patch("src.goodreads.requests.get", return_value=mock_resp):
+        books = fetch_read("https://www.goodreads.com/review/list_rss/12345")
+
+    assert len(books) == 1
+    assert books[0].title == "The Martian"
+    assert books[0].source == "goodreads"

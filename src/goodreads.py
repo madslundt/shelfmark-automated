@@ -53,6 +53,15 @@ def _ensure_to_read_shelf(url: str) -> str:
     return url
 
 
+def _force_shelf(url: str, shelf: str) -> str:
+    """Set ?shelf=<shelf> in the URL, replacing any existing shelf value."""
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    params["shelf"] = [shelf]
+    new_query = urllib.parse.urlencode(params, doseq=True)
+    return parsed._replace(query=new_query).geturl()
+
+
 def fetch_want_to_read(rss_url: str) -> list[Book]:
     """Fetch books from the Goodreads 'to-read' RSS shelf.
 
@@ -114,4 +123,65 @@ def fetch_want_to_read(rss_url: str) -> list[Book]:
             continue
 
     log.info("Goodreads: fetched %d 'to-read' books", len(books))
+    return books
+
+
+def fetch_read(rss_url: str) -> list[Book]:
+    """Fetch fully-read books from the Goodreads 'read' shelf RSS feed.
+
+    Only fully-completed reads are returned. Currently-reading / in-progress
+    entries are not fetched (uses shelf=read, not shelf=currently-reading).
+
+    Args:
+        rss_url: Goodreads RSS URL. The shelf parameter is forced to 'read'.
+
+    Returns:
+        List of Book objects with source="goodreads".
+
+    Raises:
+        requests.ConnectionError / requests.Timeout: After all retries exhausted.
+    """
+    url = _force_shelf(rss_url, "read")
+    log.debug("Goodreads: fetching read shelf RSS from %s", url)
+
+    def _do_fetch():
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "shelfmark-automated/1.0"})
+        resp.raise_for_status()
+        return resp.text
+
+    raw_xml = _with_retry(_do_fetch)
+    feed = feedparser.parse(raw_xml)
+
+    if feed.bozo and not feed.entries:
+        log.warning("Goodreads: RSS parse error — %s", feed.get("bozo_exception", "unknown"))
+        return []
+
+    books: list[Book] = []
+    for entry in feed.entries:
+        try:
+            title = (getattr(entry, "title", "") or "").strip()
+            if not title:
+                continue
+
+            author = (getattr(entry, "author_name", "") or "").strip()
+            if not author:
+                author = (getattr(entry, "author", "") or "").strip()
+
+            raw_isbn = (getattr(entry, "isbn", "") or "").strip()
+            isbn_10 = raw_isbn if raw_isbn else None
+            source_id = str(getattr(entry, "book_id", "") or "").strip()
+
+            books.append(Book(
+                title=title,
+                author=author,
+                isbn_10=isbn_10,
+                isbn_13=None,
+                source="goodreads",
+                source_id=source_id,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Skipping malformed Goodreads entry: %s", exc)
+            continue
+
+    log.info("Goodreads: fetched %d read books", len(books))
     return books

@@ -35,6 +35,14 @@ _AUTHOR_STOPWORDS: frozenset[str] = frozenset({"the", "a", "an", "of", "and", "&
 # Matches Goodreads-style series suffixes: "(Series Name, #3)" or "(Series #3)"
 _SERIES_SUFFIX_RE = re.compile(r"\s*\([^)]*#\s*\d+\)\s*$")
 
+# Extracts the numeric Calibre book ID from an OPDS acquisition link href.
+# Calibre-Web serves these as /opds/book/<id>/epub/... or /opds/book/<id>/pdf/...
+_BOOK_ID_RE = re.compile(r"/opds/book/(\d+)/")
+
+
+class CWAAuthError(Exception):
+    """Raised when CWA web session authentication cannot be established."""
+
 
 def _strip_series_suffix(title: str) -> str:
     """Remove a trailing Goodreads series annotation such as '(Dark Future, #1)'."""
@@ -141,6 +149,35 @@ def _search_opds(
         return None
 
 
+def _extract_book_id(entry_el) -> int | None:
+    """Extract the Calibre numeric book ID from an OPDS entry element's acquisition links."""
+    for link in entry_el.findall("atom:link", _ATOM_NS):
+        href = link.get("href", "")
+        m = _BOOK_ID_RE.search(href)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _get_opds_entries_with_id(xml_text: str) -> list[tuple[str, str, int | None]]:
+    """Return (normalised_title, normalised_author, calibre_book_id) for all entries."""
+    try:
+        root = ET.fromstring(xml_text)
+        entries = []
+        for entry in root.findall("atom:entry", _ATOM_NS):
+            raw_title = entry.findtext("atom:title", namespaces=_ATOM_NS) or ""
+            if not raw_title.strip():
+                continue
+            author_el = entry.find("atom:author/atom:name", _ATOM_NS)
+            raw_author = author_el.text if author_el is not None and author_el.text else ""
+            book_id = _extract_book_id(entry)
+            entries.append((_normalize(raw_title), _normalize(raw_author), book_id))
+        return entries
+    except ET.ParseError as exc:
+        log.debug("OPDS XML parse error: %s", exc)
+        return []
+
+
 def is_book_in_library(
     book: Book,
     base_url: str,
@@ -225,3 +262,155 @@ def is_book_in_library(
         return None
 
     return False
+
+
+def find_book_in_library(
+    book: Book,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+) -> int | None:
+    """Return the Calibre book ID if the book is in the CWA library, else None.
+
+    Uses the same OPDS title/author matching strategy as is_book_in_library().
+    Returns None on network error or when no match is found.
+    """
+    headers = _build_auth_header(username, password)
+
+    clean_title = _strip_series_suffix(book.title)
+    book_title_norm = _normalize(clean_title)
+    if not book_title_norm:
+        return None
+
+    book_author_norm = _normalize(book.author)
+
+    queries = [clean_title]
+    for article in ("The ", "A ", "An "):
+        if clean_title.startswith(article):
+            queries.append(clean_title[len(article):])
+            break
+
+    for query in queries:
+        encoded = urllib.parse.quote(query, safe="")
+        url = f"{base_url.rstrip('/')}/opds/search/{encoded}"
+        try:
+            resp = requests.get(
+                url,
+                headers={**headers, "Accept": "application/atom+xml,application/xml,*/*"},
+                timeout=30,
+            )
+            if not resp.ok:
+                continue
+            entries = _get_opds_entries_with_id(resp.text)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            log.warning("CWA OPDS unreachable during find_book_in_library for %r: %s", query, exc)
+            return None
+
+        for result_title, result_author, book_id in entries:
+            if not _titles_match(book_title_norm, result_title):
+                continue
+            if _authors_compatible(book_author_norm, result_author):
+                log.debug(
+                    "CWA: found %r (id=%s) via query %r",
+                    book.title, book_id, query,
+                )
+                return book_id
+            sig_words = sum(1 for w in result_title.split() if w not in _AUTHOR_STOPWORDS)
+            if book_title_norm == result_title and sig_words >= 5:
+                return book_id
+
+    return None
+
+
+class CWAClient:
+    """Stateful CWA web session client for marking books as read.
+
+    Uses form-based login (with CSRF token extraction) to establish a session,
+    then POST /ajax/book/{id}/readstatus to mark books as read.
+
+    Requires username and password — CWA read status is per-user and cannot
+    be set without an authenticated session.
+    """
+
+    def __init__(self, base_url: str, username: str | None, password: str | None) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._username = username
+        self._password = password
+        self._session = requests.Session()
+        self._authenticated = False
+        self._csrf_token: str = ""
+
+    def mark_as_read(self, book_id: int) -> bool:
+        """Mark a book as read in CWA.
+
+        Returns True on success (2xx), False on any failure.
+        Raises CWAAuthError immediately if credentials are not configured.
+        """
+        if not self._username or not self._password:
+            raise CWAAuthError(
+                "CWA_USERNAME and CWA_PASSWORD are required to mark books as read"
+            )
+
+        if not self._authenticated:
+            self._login()
+
+        return self._post_read_status(book_id)
+
+    def _login(self) -> None:
+        """Login to CWA via the web form, storing the session cookie."""
+        try:
+            resp = self._session.get(f"{self._base_url}/login", timeout=10)
+            resp.raise_for_status()
+            m = re.search(
+                r'name=["\']csrf_token["\'][^>]*value=["\']([^"\']+)["\']',
+                resp.text,
+            )
+            if not m:
+                m = re.search(
+                    r'value=["\']([^"\']+)["\'][^>]*name=["\']csrf_token["\']',
+                    resp.text,
+                )
+            self._csrf_token = m.group(1) if m else ""
+
+            post_resp = self._session.post(
+                f"{self._base_url}/login",
+                data={
+                    "username": self._username,
+                    "password": self._password,
+                    "csrf_token": self._csrf_token,
+                    "remember_me": "on",
+                    "next": "/",
+                },
+                timeout=15,
+                allow_redirects=True,
+            )
+            if "/login" in post_resp.url:
+                raise CWAAuthError(
+                    "CWA login failed — check CWA_USERNAME and CWA_PASSWORD"
+                )
+            self._authenticated = True
+            log.info("CWA: logged in as %r", self._username)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            raise CWAAuthError(f"Cannot reach CWA at {self._base_url}: {exc}") from exc
+
+    def _post_read_status(self, book_id: int) -> bool:
+        headers = {"X-Requested-With": "XMLHttpRequest"}
+        if self._csrf_token:
+            headers["X-CSRFToken"] = self._csrf_token
+        try:
+            resp = self._session.post(
+                f"{self._base_url}/ajax/book/{book_id}/readstatus",
+                data={"is_read": 1},
+                headers=headers,
+                timeout=10,
+            )
+            if resp.ok:
+                log.debug("CWA: book %d marked as read", book_id)
+                return True
+            log.warning(
+                "CWA: mark-as-read returned HTTP %d for book_id=%d", resp.status_code, book_id
+            )
+            return False
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            log.error("CWA: network error marking book %d as read: %s", book_id, exc)
+            return False

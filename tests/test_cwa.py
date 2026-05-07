@@ -1,8 +1,17 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 
-from src.cwa import _build_auth_header, _strip_series_suffix, _titles_match, is_book_in_library
+from src.cwa import (
+    CWAAuthError,
+    CWAClient,
+    _build_auth_header,
+    _strip_series_suffix,
+    _titles_match,
+    find_book_in_library,
+    is_book_in_library,
+)
 from src.models import Book
 
 _OPDS_FEED_WITH_DARK_MATTER = """<?xml version="1.0"?>
@@ -227,3 +236,121 @@ def test_is_book_in_library_no_author_in_feed_still_matches():
     book = Book("Dark Matter", "Blake Crouch")
     with patch("requests.get", return_value=mock_resp):
         assert is_book_in_library(book, "http://cwa:8083", None, None) is True
+
+
+_OPDS_FEED_WITH_ID = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Dark Matter</title>
+    <author><name>Blake Crouch</name></author>
+    <link href="/opds/book/42/epub/Dark Matter - Blake Crouch.epub"
+          type="application/epub+zip"
+          rel="http://opds-spec.org/acquisition"/>
+  </entry>
+</feed>"""
+
+_OPDS_FEED_NO_LINK = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Dark Matter</title>
+    <author><name>Blake Crouch</name></author>
+  </entry>
+</feed>"""
+
+
+def test_find_book_in_library_returns_id():
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_WITH_ID
+
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", return_value=mock_resp):
+        result = find_book_in_library(book, "http://cwa:8083", None, None)
+
+    assert result == 42
+
+
+def test_find_book_in_library_not_found_returns_none():
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_EMPTY  # already defined in the test file
+
+    book = Book("Nonexistent Book", "Unknown Author")
+    with patch("requests.get", return_value=mock_resp):
+        result = find_book_in_library(book, "http://cwa:8083", None, None)
+
+    assert result is None
+
+
+def test_find_book_in_library_match_no_link_returns_none():
+    # Title matches but no acquisition link → cannot extract ID
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.text = _OPDS_FEED_NO_LINK
+
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", return_value=mock_resp):
+        result = find_book_in_library(book, "http://cwa:8083", None, None)
+
+    assert result is None
+
+
+def test_find_book_in_library_network_error_returns_none():
+    book = Book("Dark Matter", "Blake Crouch")
+    with patch("requests.get", side_effect=requests.ConnectionError("no connection")):
+        result = find_book_in_library(book, "http://cwa:8083", None, None)
+
+    assert result is None
+
+
+def test_cwa_client_mark_as_read_success():
+    mock_login_page = MagicMock()
+    mock_login_page.status_code = 200
+    mock_login_page.text = '<input name="csrf_token" type="hidden" value="test-csrf-123">'
+    mock_login_page.url = "http://cwa:8083/login"
+
+    mock_login_post = MagicMock()
+    mock_login_post.status_code = 200
+    mock_login_post.url = "http://cwa:8083/"
+
+    mock_mark = MagicMock()
+    mock_mark.ok = True
+    mock_mark.status_code = 200
+
+    client = CWAClient("http://cwa:8083", "admin", "secret")
+    with patch.object(client._session, "get", return_value=mock_login_page), \
+         patch.object(client._session, "post", side_effect=[mock_login_post, mock_mark]):
+        result = client.mark_as_read(42)
+
+    assert result is True
+
+
+def test_cwa_client_mark_as_read_http_error_returns_false():
+    mock_login_page = MagicMock()
+    mock_login_page.status_code = 200
+    mock_login_page.text = '<input name="csrf_token" type="hidden" value="tok">'
+    mock_login_page.url = "http://cwa:8083/login"
+
+    mock_login_post = MagicMock()
+    mock_login_post.status_code = 200
+    mock_login_post.url = "http://cwa:8083/"
+
+    mock_mark = MagicMock()
+    mock_mark.ok = False
+    mock_mark.status_code = 500
+
+    client = CWAClient("http://cwa:8083", "admin", "secret")
+    with patch.object(client._session, "get", return_value=mock_login_page), \
+         patch.object(client._session, "post", side_effect=[mock_login_post, mock_mark]):
+        result = client.mark_as_read(42)
+
+    assert result is False
+
+
+def test_cwa_client_raises_on_missing_credentials():
+    client = CWAClient("http://cwa:8083", None, None)
+    with pytest.raises(CWAAuthError):
+        client.mark_as_read(42)

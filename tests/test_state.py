@@ -370,7 +370,7 @@ def test_get_last_read_status_sync_returns_none_initially(tmp_path):
 
 
 def test_set_and_get_last_read_status_sync(tmp_path):
-    from datetime import datetime, timedelta
+    from datetime import datetime
     state = StateManager(str(tmp_path / "state.db"))
     state.set_last_read_status_sync()
     result = state.get_last_read_status_sync()

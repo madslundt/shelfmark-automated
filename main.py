@@ -43,6 +43,7 @@ class Config:
     sync_interval_max_seconds: int
     state_file: str | None
     full_sync_interval_seconds: int
+    read_status_sync_interval_seconds: int
     log_level: str
 
     @classmethod
@@ -84,6 +85,13 @@ class Config:
         except ValueError:
             full_sync_interval = 86400
 
+        try:
+            read_status_sync_interval = int(
+                os.environ.get("READ_STATUS_SYNC_INTERVAL_SECONDS", "86400") or "86400"
+            )
+        except ValueError:
+            read_status_sync_interval = 86400
+
         return cls(
             hardcover_api_key=optional("HARDCOVER_API_KEY"),
             goodreads_rss_url=optional("GOODREADS_RSS_URL"),
@@ -97,6 +105,7 @@ class Config:
             sync_interval_max_seconds=max_seconds,
             state_file=optional("STATE_FILE"),
             full_sync_interval_seconds=full_sync_interval,
+            read_status_sync_interval_seconds=read_status_sync_interval,
             log_level=optional("LOG_LEVEL") or "INFO",
         )
 
@@ -146,6 +155,20 @@ def _is_full_sync_due(state: StateManager | None, interval_seconds: int) -> bool
     last = state.get_last_full_sync()
     if last is None:
         return False  # first ever run naturally processes all books (state is empty)
+    return (datetime.now() - last).total_seconds() >= interval_seconds
+
+
+def _is_read_status_sync_due(last: datetime | None, interval_seconds: int) -> bool:
+    """Return True if the read status sync should run now.
+
+    Args:
+        last: Timestamp of the last read status sync run, or None if never run.
+        interval_seconds: How often to run (seconds). 0 means disabled.
+    """
+    if interval_seconds <= 0:
+        return False
+    if last is None:
+        return True  # Never run before — run immediately
     return (datetime.now() - last).total_seconds() >= interval_seconds
 
 
@@ -392,10 +415,13 @@ def main() -> None:
 
     log.info(
         "shelfmark-automated starting up  "
-        "(interval=%d-%ds, full_sync=%ds, cwa=%s, shelfmark=%s, state=%s)",
+        "(interval=%d-%ds, full_sync=%ds, read_status_sync=%s, cwa=%s, shelfmark=%s, state=%s)",
         config.sync_interval_min_seconds,
         config.sync_interval_max_seconds,
         config.full_sync_interval_seconds,
+        f"{config.read_status_sync_interval_seconds}s"
+        if config.read_status_sync_interval_seconds > 0
+        else "disabled",
         config.cwa_url or "not configured",
         config.shelfmark_url or "not configured",
         config.state_file or "disabled",
@@ -430,10 +456,18 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 log.error("Sync pass failed with unexpected error: %s", exc, exc_info=True)
 
-            try:
-                sync_read_status_once(config, cwa_read_client, state)
-            except Exception as exc:  # noqa: BLE001
-                log.error("Read status sync pass failed: %s", exc, exc_info=True)
+            rs_last: datetime | None = state.get_last_read_status_sync() if state else None
+            if _is_read_status_sync_due(rs_last, config.read_status_sync_interval_seconds):
+                try:
+                    sync_read_status_once(config, cwa_read_client, state)
+                    if state is not None:
+                        state.set_last_read_status_sync()
+                    else:
+                        rs_last = datetime.now()
+                except Exception as exc:  # noqa: BLE001
+                    log.error("Read status sync pass failed: %s", exc, exc_info=True)
+            else:
+                log.debug("Read status sync: not due yet — skipping this cycle")
 
             if config.sync_interval_max_seconds <= 0:
                 log.info("SYNC_INTERVAL=0 — exiting after one pass")

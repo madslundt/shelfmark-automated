@@ -1,7 +1,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from main import Config, deduplicate, sync_once, sync_read_status_once
+from main import Config, _is_read_status_sync_due, deduplicate, sync_once, sync_read_status_once
 from src.cwa import CWAClient
 from src.models import Book
 from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
@@ -103,6 +103,7 @@ def _make_config(**overrides):
         sync_interval_max_seconds=0,
         state_file=None,
         full_sync_interval_seconds=0,
+        read_status_sync_interval_seconds=86400,
         log_level="INFO",
     )
     return Config(**{**defaults, **overrides})
@@ -280,6 +281,7 @@ def test_sync_read_status_marks_found_book():
         sync_interval_max_seconds=900,
         state_file=None,
         full_sync_interval_seconds=86400,
+        read_status_sync_interval_seconds=86400,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -308,6 +310,7 @@ def test_sync_read_status_skips_book_not_in_library():
         sync_interval_max_seconds=900,
         state_file=None,
         full_sync_interval_seconds=86400,
+        read_status_sync_interval_seconds=86400,
         log_level="INFO",
     )
     book = Book("Unknown Book", "Nobody", source="hardcover")
@@ -337,6 +340,7 @@ def test_sync_read_status_skips_already_processed(tmp_path):
         sync_interval_max_seconds=900,
         state_file=None,
         full_sync_interval_seconds=86400,
+        read_status_sync_interval_seconds=86400,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -366,6 +370,7 @@ def test_sync_read_status_no_cwa_client_exits_early():
         sync_interval_max_seconds=900,
         state_file=None,
         full_sync_interval_seconds=86400,
+        read_status_sync_interval_seconds=86400,
         log_level="INFO",
     )
 
@@ -373,3 +378,49 @@ def test_sync_read_status_no_cwa_client_exits_early():
         sync_read_status_once(config, cwa_client=None, state=None)
 
     mock_fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Config: read_status_sync_interval_seconds
+# ---------------------------------------------------------------------------
+
+def test_config_read_status_sync_interval_default():
+    with patch.dict(os.environ, {}, clear=True):
+        config = Config.from_env()
+    assert config.read_status_sync_interval_seconds == 86400
+
+
+def test_config_read_status_sync_interval_zero_disables():
+    with patch.dict(os.environ, {"READ_STATUS_SYNC_INTERVAL_SECONDS": "0"}, clear=True):
+        config = Config.from_env()
+    assert config.read_status_sync_interval_seconds == 0
+
+
+def test_config_read_status_sync_interval_custom():
+    with patch.dict(os.environ, {"READ_STATUS_SYNC_INTERVAL_SECONDS": "3600"}, clear=True):
+        config = Config.from_env()
+    assert config.read_status_sync_interval_seconds == 3600
+
+
+# ---------------------------------------------------------------------------
+# _is_read_status_sync_due
+# ---------------------------------------------------------------------------
+
+def test_is_read_status_sync_due_disabled():
+    assert _is_read_status_sync_due(last=None, interval_seconds=0) is False
+
+
+def test_is_read_status_sync_due_no_prior_run():
+    assert _is_read_status_sync_due(last=None, interval_seconds=86400) is True
+
+
+def test_is_read_status_sync_due_recent_run():
+    from datetime import datetime, timedelta
+    recent = datetime.now() - timedelta(hours=1)
+    assert _is_read_status_sync_due(last=recent, interval_seconds=86400) is False
+
+
+def test_is_read_status_sync_due_stale_run():
+    from datetime import datetime, timedelta
+    old = datetime.now() - timedelta(days=2)
+    assert _is_read_status_sync_due(last=old, interval_seconds=86400) is True

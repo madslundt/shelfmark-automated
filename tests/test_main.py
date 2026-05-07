@@ -1,7 +1,14 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from main import Config, _is_read_status_sync_due, deduplicate, sync_once, sync_read_status_once
+from main import (
+    Config,
+    _is_read_status_sync_due,
+    deduplicate,
+    sync_metadata_once,
+    sync_once,
+    sync_read_status_once,
+)
 from src.cwa import CWAClient
 from src.models import Book
 from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
@@ -104,6 +111,7 @@ def _make_config(**overrides):
         state_file=None,
         full_sync_interval_seconds=0,
         read_status_sync_interval_seconds=86400,
+        fix_metadata=True,
         log_level="INFO",
     )
     return Config(**{**defaults, **overrides})
@@ -282,6 +290,7 @@ def test_sync_read_status_marks_found_book():
         state_file=None,
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
+        fix_metadata=True,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -311,6 +320,7 @@ def test_sync_read_status_skips_book_not_in_library():
         state_file=None,
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
+        fix_metadata=True,
         log_level="INFO",
     )
     book = Book("Unknown Book", "Nobody", source="hardcover")
@@ -341,6 +351,7 @@ def test_sync_read_status_skips_already_processed(tmp_path):
         state_file=None,
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
+        fix_metadata=True,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -371,6 +382,7 @@ def test_sync_read_status_no_cwa_client_exits_early():
         state_file=None,
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
+        fix_metadata=True,
         log_level="INFO",
     )
 
@@ -424,3 +436,68 @@ def test_is_read_status_sync_due_stale_run():
     from datetime import datetime, timedelta
     old = datetime.now() - timedelta(days=2)
     assert _is_read_status_sync_due(last=old, interval_seconds=86400) is True
+
+
+# ---------------------------------------------------------------------------
+# Config: fix_metadata
+# ---------------------------------------------------------------------------
+
+def test_config_fix_metadata_defaults_true():
+    with patch.dict(os.environ, {}, clear=True):
+        c = Config.from_env()
+    assert c.fix_metadata is True
+
+
+def test_config_fix_metadata_disabled_by_env():
+    with patch.dict(os.environ, {"FIX_METADATA": "false"}):
+        c = Config.from_env()
+    assert c.fix_metadata is False
+
+
+def test_config_fix_metadata_disabled_by_zero():
+    with patch.dict(os.environ, {"FIX_METADATA": "0"}):
+        c = Config.from_env()
+    assert c.fix_metadata is False
+
+
+# ---------------------------------------------------------------------------
+# sync_metadata_once
+# ---------------------------------------------------------------------------
+
+def test_sync_metadata_once_skips_when_cwa_not_configured():
+    config = _make_config(cwa_url=None, fix_metadata=True)
+    sync_metadata_once(config, None)  # must not raise
+
+
+def test_sync_metadata_once_skips_when_disabled():
+    config = _make_config(fix_metadata=False)
+    client = MagicMock()
+    with patch("main.cwa.find_mismatched_author") as mock_find:
+        sync_metadata_once(config, client)
+    mock_find.assert_not_called()
+
+
+def test_sync_metadata_once_calls_update_for_mismatch():
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("All The Lies", "Nicola Sanders")
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")):
+        sync_metadata_once(config, client)
+
+    client.update_book_author.assert_called_once_with(42, "Nicola Sanders")
+
+
+def test_sync_metadata_once_skips_no_mismatch():
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("Dark Matter", "Blake Crouch")
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_mismatched_author", return_value=None):
+        sync_metadata_once(config, client)
+
+    client.update_book_author.assert_not_called()

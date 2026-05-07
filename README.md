@@ -317,6 +317,7 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `STATE_FILE` | No | — | Path to the SQLite state DB for incremental sync. Auto-detected as `/data/state.db` when `/data/` exists. |
 | `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
 | `READ_STATUS_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to sync read status from Hardcover/Goodreads to CWA. Set to `0` to disable entirely. Requires `CWA_USERNAME` and `CWA_PASSWORD`. |
+| `FIX_METADATA` | No | `true` | Automatically correct wrong author metadata in CWA. Runs on the same schedule as read-status sync (both shelves). Set to `false` to disable. Requires **"Edit books"** permission for your CWA user (Admin → Edit User). |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PUID` | No | `1000` | UID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
 | `PGID` | No | `1000` | GID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |

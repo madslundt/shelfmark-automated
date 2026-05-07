@@ -10,6 +10,7 @@ from src.cwa import (
     _strip_series_suffix,
     _titles_match,
     find_book_in_library,
+    find_mismatched_author,
     is_book_in_library,
 )
 from src.models import Book
@@ -243,9 +244,21 @@ _OPDS_FEED_WITH_ID = """<?xml version="1.0"?>
   <entry>
     <title>Dark Matter</title>
     <author><name>Blake Crouch</name></author>
-    <link href="/opds/book/42/epub/Dark Matter - Blake Crouch.epub"
+    <link href="/opds/download/42/epub/"
           type="application/epub+zip"
           rel="http://opds-spec.org/acquisition"/>
+  </entry>
+</feed>"""
+
+_OPDS_FEED_TITLE_MATCH_WRONG_AUTHOR = """\
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>All the Lies We Told</title>
+    <author><name>Jennifer Harvey</name></author>
+    <link rel="http://opds-spec.org/acquisition"
+          href="/opds/download/42/epub/"
+          type="application/epub+zip"/>
   </entry>
 </feed>"""
 
@@ -354,3 +367,138 @@ def test_cwa_client_raises_on_missing_credentials():
     client = CWAClient("http://cwa:8083", None, None)
     with pytest.raises(CWAAuthError):
         client.mark_as_read(42)
+
+
+# ---------------------------------------------------------------------------
+# find_mismatched_author
+# ---------------------------------------------------------------------------
+
+def test_find_mismatched_author_returns_id_and_wrong_author():
+    """Title substring match but author differs → returns (book_id, wrong_author)."""
+    book = Book("All The Lies", "Nicola Sanders")
+    mock_resp = MagicMock(ok=True, text=_OPDS_FEED_TITLE_MATCH_WRONG_AUTHOR)
+    with patch("requests.get", return_value=mock_resp):
+        result = find_mismatched_author(book, "http://cwa", None, None)
+    assert result == (42, "jennifer harvey")
+
+
+def test_find_mismatched_author_returns_none_when_author_correct():
+    """Title and author both match → no mismatch, return None."""
+    book = Book("All the Lies We Told", "Jennifer Harvey")
+    mock_resp = MagicMock(ok=True, text=_OPDS_FEED_TITLE_MATCH_WRONG_AUTHOR)
+    with patch("requests.get", return_value=mock_resp):
+        result = find_mismatched_author(book, "http://cwa", None, None)
+    assert result is None
+
+
+def test_find_mismatched_author_returns_none_when_not_in_library():
+    """No title match → book not in library, return None."""
+    book = Book("Some Completely Different Book", "Some Author")
+    mock_resp = MagicMock(ok=True, text=_OPDS_FEED_EMPTY)
+    with patch("requests.get", return_value=mock_resp):
+        result = find_mismatched_author(book, "http://cwa", None, None)
+    assert result is None
+
+
+def test_find_mismatched_author_returns_none_on_network_error():
+    """Network error → return None (don't crash)."""
+    book = Book("All The Lies", "Nicola Sanders")
+    with patch("requests.get", side_effect=requests.ConnectionError("timeout")):
+        result = find_mismatched_author(book, "http://cwa", None, None)
+    assert result is None
+
+
+def test_find_mismatched_author_returns_none_when_id_missing():
+    """Title matches, author mismatches, but no acquisition link → None."""
+    feed_no_link = """\
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>All the Lies We Told</title>
+    <author><name>Jennifer Harvey</name></author>
+  </entry>
+</feed>"""
+    book = Book("All The Lies", "Nicola Sanders")
+    mock_resp = MagicMock(ok=True, text=feed_no_link)
+    with patch("requests.get", return_value=mock_resp):
+        result = find_mismatched_author(book, "http://cwa", None, None)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# CWAClient.update_book_author
+# ---------------------------------------------------------------------------
+
+_MOCK_AJAX_BOOK_RESPONSE = {
+    "title": "All the Lies We Told",
+    "authors": ["Jennifer Harvey"],
+    "publishers": ["Bookouture"],
+    "pubdate": "2023-03-15T00:00:00+00:00",
+    "tags": ["Fiction", "Thriller"],
+    "series": None,
+    "series_index": None,
+    "comments": "<p>A gripping thriller.</p>",
+    "languages": ["eng"],
+    "rating": 8,
+}
+
+_EDIT_PAGE_HTML = '<input type="hidden" name="csrf_token" value="test-csrf-token">'
+
+
+def test_update_book_author_success():
+    """Successful update returns True and POSTs corrected author."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "test-csrf-token"
+
+    mock_ajax = MagicMock(ok=True)
+    mock_ajax.json.return_value = _MOCK_AJAX_BOOK_RESPONSE
+    mock_edit_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
+    mock_edit_post = MagicMock(ok=True, status_code=200)
+
+    with patch.object(client._session, "get", side_effect=[mock_ajax, mock_edit_get]), \
+         patch.object(client._session, "post", return_value=mock_edit_post) as mock_post:
+        result = client.update_book_author(42, "Nicola Sanders")
+
+    assert result is True
+    call_data = mock_post.call_args
+    assert call_data[1]["data"]["author_name"] == "Nicola Sanders"
+    assert call_data[1]["data"]["title"] == "All the Lies We Told"
+
+
+def test_update_book_author_returns_false_when_ajax_fails():
+    """If /ajax/book/<id> returns non-2xx, returns False."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "tok"
+
+    mock_ajax = MagicMock(ok=False, status_code=404)
+    with patch.object(client._session, "get", return_value=mock_ajax):
+        result = client.update_book_author(42, "Nicola Sanders")
+
+    assert result is False
+
+
+def test_update_book_author_returns_false_when_edit_post_fails():
+    """If POST /edit/<id> returns non-2xx, returns False."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "tok"
+
+    mock_ajax = MagicMock(ok=True)
+    mock_ajax.json.return_value = _MOCK_AJAX_BOOK_RESPONSE
+    mock_edit_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
+    mock_edit_post = MagicMock(ok=False, status_code=403)
+
+    with patch.object(client._session, "get", side_effect=[mock_ajax, mock_edit_get]), \
+         patch.object(client._session, "post", return_value=mock_edit_post):
+        result = client.update_book_author(42, "Nicola Sanders")
+
+    assert result is False
+
+
+def test_update_book_author_raises_without_credentials():
+    """Raises CWAAuthError if no credentials configured."""
+    client = CWAClient("http://cwa:8083", None, None)
+    with pytest.raises(CWAAuthError):
+        client.update_book_author(42, "Nicola Sanders")

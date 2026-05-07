@@ -44,6 +44,7 @@ class Config:
     state_file: str | None
     full_sync_interval_seconds: int
     read_status_sync_interval_seconds: int
+    fix_metadata: bool
     log_level: str
 
     @classmethod
@@ -106,6 +107,9 @@ class Config:
             state_file=optional("STATE_FILE"),
             full_sync_interval_seconds=full_sync_interval,
             read_status_sync_interval_seconds=read_status_sync_interval,
+            fix_metadata=os.environ.get("FIX_METADATA", "true").strip().lower() not in {
+                "false", "0", "no"
+            },
             log_level=optional("LOG_LEVEL") or "INFO",
         )
 
@@ -395,6 +399,73 @@ def sync_read_status_once(
         state.save()
 
 
+def sync_metadata_once(
+    config: Config,
+    cwa_client: "CWAClient | None",
+) -> None:
+    """Fetch all books from Hardcover/Goodreads and fix wrong author metadata in CWA.
+
+    Checks both read and want-to-read shelves. Skips silently when disabled
+    (FIX_METADATA=false) or when CWA is not configured.
+    """
+    if not config.fix_metadata:
+        log.debug("Metadata fix: disabled via FIX_METADATA=false — skipping")
+        return
+
+    if not config.cwa_url or not cwa_client:
+        log.debug("Metadata fix: CWA not configured — skipping")
+        return
+
+    all_books: list[Book] = []
+
+    if config.hardcover_api_key:
+        try:
+            all_books += hardcover.fetch_want_to_read(config.hardcover_api_key)
+            all_books += hardcover.fetch_read(config.hardcover_api_key)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Metadata fix: Hardcover fetch failed — %s", exc)
+    else:
+        log.debug("Metadata fix: Hardcover not configured — skipping")
+
+    if config.goodreads_rss_url:
+        try:
+            all_books += goodreads.fetch_want_to_read(config.goodreads_rss_url)
+            all_books += goodreads.fetch_read(config.goodreads_rss_url)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Metadata fix: Goodreads fetch failed — %s", exc)
+    else:
+        log.debug("Metadata fix: Goodreads not configured — skipping")
+
+    all_books = deduplicate(all_books)
+    log.debug("Metadata fix: checking %d unique books", len(all_books))
+
+    ok_count = 0
+    fail_count = 0
+    for book in all_books:
+        result = cwa.find_mismatched_author(
+            book, config.cwa_url, config.cwa_username, config.cwa_password
+        )
+        if result is None:
+            continue
+        book_id, wrong_author = result
+        try:
+            ok = cwa_client.update_book_author(book_id, book.author)
+        except CWAAuthError as exc:
+            log.error("Metadata fix: CWA auth failed — stopping: %s", exc)
+            break
+        if ok:
+            ok_count += 1
+            log.info(
+                "Metadata fix: book %d %r — author corrected from %r to %r",
+                book_id, book.title, wrong_author, book.author,
+            )
+        else:
+            fail_count += 1
+            log.warning("Metadata fix: failed to update book %d %r", book_id, book.title)
+
+    log.info("Metadata fix: %d corrected, %d failed", ok_count, fail_count)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -415,13 +486,15 @@ def main() -> None:
 
     log.info(
         "shelfmark-automated starting up  "
-        "(interval=%d-%ds, full_sync=%ds, read_status_sync=%s, cwa=%s, shelfmark=%s, state=%s)",
+        "(interval=%d-%ds, full_sync=%ds, read_status_sync=%s, fix_metadata=%s, "
+        "cwa=%s, shelfmark=%s, state=%s)",
         config.sync_interval_min_seconds,
         config.sync_interval_max_seconds,
         config.full_sync_interval_seconds,
         f"{config.read_status_sync_interval_seconds}s"
         if config.read_status_sync_interval_seconds > 0
         else "disabled",
+        "enabled" if config.fix_metadata else "disabled",
         config.cwa_url or "not configured",
         config.shelfmark_url or "not configured",
         config.state_file or "disabled",
@@ -466,6 +539,11 @@ def main() -> None:
                         rs_last = datetime.now()
                 except Exception as exc:  # noqa: BLE001
                     log.error("Read status sync pass failed: %s", exc, exc_info=True)
+
+                try:
+                    sync_metadata_once(config, cwa_read_client)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("Metadata fix pass failed: %s", exc, exc_info=True)
             else:
                 log.debug("Read status sync: not due yet — skipping this cycle")
 

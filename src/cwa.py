@@ -35,9 +35,9 @@ _AUTHOR_STOPWORDS: frozenset[str] = frozenset({"the", "a", "an", "of", "and", "&
 # Matches Goodreads-style series suffixes: "(Series Name, #3)" or "(Series #3)"
 _SERIES_SUFFIX_RE = re.compile(r"\s*\([^)]*#\s*\d+\)\s*$")
 
-# Extracts the numeric Calibre book ID from an OPDS acquisition link href.
-# Calibre-Web serves these as /opds/book/<id>/epub/... or /opds/book/<id>/pdf/...
-_BOOK_ID_RE = re.compile(r"/opds/book/(\d+)/")
+# Extracts the numeric Calibre book ID from an OPDS link href.
+# Calibre-Web serves these as /opds/download/<id>/epub/ or /opds/cover/<id>
+_BOOK_ID_RE = re.compile(r"/opds/(?:download|cover)/(\d+)")
 
 
 class CWAAuthError(Exception):
@@ -322,6 +322,66 @@ def find_book_in_library(
     return None
 
 
+def find_mismatched_author(
+    book: Book,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+) -> tuple[int, str] | None:
+    """Return (calibre_book_id, wrong_author) if the book is in CWA with a mismatched author.
+
+    Uses the same OPDS title search + matching as find_book_in_library.
+    Returns None when:
+      - Book is not in the library.
+      - Book is in the library with a compatible author (no fix needed).
+      - Network error or book_id cannot be extracted from OPDS links.
+    """
+    headers = _build_auth_header(username, password)
+
+    clean_title = _strip_series_suffix(book.title)
+    book_title_norm = _normalize(clean_title)
+    if not book_title_norm:
+        return None
+
+    book_author_norm = _normalize(book.author)
+
+    queries = [clean_title]
+    for article in ("The ", "A ", "An "):
+        if clean_title.startswith(article):
+            queries.append(clean_title[len(article):])
+            break
+
+    for query in queries:
+        encoded = urllib.parse.quote(query, safe="")
+        url = f"{base_url.rstrip('/')}/opds/search/{encoded}"
+        try:
+            resp = requests.get(
+                url,
+                headers={**headers, "Accept": "application/atom+xml,application/xml,*/*"},
+                timeout=30,
+            )
+            if not resp.ok:
+                continue
+            entries = _get_opds_entries_with_id(resp.text)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            log.warning("CWA OPDS unreachable during find_mismatched_author for %r: %s", query, exc)
+            return None
+
+        for result_title, result_author, book_id in entries:
+            if not _titles_match(book_title_norm, result_title):
+                continue
+            if _authors_compatible(book_author_norm, result_author):
+                return None  # author is already correct
+            if book_id is not None:
+                log.debug(
+                    "CWA: author mismatch for %r — CWA has %r, correct is %r (id=%d)",
+                    book.title, result_author, book.author, book_id,
+                )
+                return (book_id, result_author)
+
+    return None
+
+
 class CWAClient:
     """Stateful CWA web session client for marking books as read.
 
@@ -355,6 +415,77 @@ class CWAClient:
             self._login()
 
         return self._post_read_status(book_id)
+
+    def update_book_author(self, book_id: int, correct_author: str) -> bool:
+        """Update the author field of a book via CWA's edit form.
+
+        Requires the CWA user to have 'Edit books' permission (Admin → Edit User).
+        Returns True on success, False on any failure.
+        Raises CWAAuthError if credentials are not configured.
+        """
+        if not self._username or not self._password:
+            raise CWAAuthError(
+                "CWA_USERNAME and CWA_PASSWORD are required to edit book metadata"
+            )
+
+        if not self._authenticated:
+            self._login()
+
+        # Fetch current metadata to preserve all fields we are not changing.
+        ajax_resp = self._session.get(f"{self._base_url}/ajax/book/{book_id}")
+        if not ajax_resp.ok:
+            log.warning(
+                "CWA: failed to fetch metadata for book %d: HTTP %d",
+                book_id, ajax_resp.status_code,
+            )
+            return False
+        current = ajax_resp.json()
+
+        # Fetch the edit page to get a fresh CSRF token.
+        edit_get = self._session.get(f"{self._base_url}/edit/{book_id}")
+        if not edit_get.ok:
+            log.warning(
+                "CWA: edit page for book %d returned HTTP %d — "
+                "ensure 'Edit books' permission is enabled for your CWA account",
+                book_id, edit_get.status_code,
+            )
+            return False
+        m = re.search(r'name="csrf_token"[^>]+value="([^"]+)"', edit_get.text)
+        if not m:
+            m = re.search(r'csrf_token.*?value="([^"]+)"', edit_get.text, re.DOTALL)
+        csrf = m.group(1) if m else self._csrf_token
+
+        # Build the edit form payload with the corrected author.
+        # NOTE: verify field names against live GET /edit/<id> response if POST silently
+        # ignores the update — Calibre-Web field names may vary by version.
+        form: dict[str, str] = {
+            "book_id": str(book_id),
+            "csrf_token": csrf,
+            "title": current.get("title", ""),
+            "author_name": correct_author,
+            "pubdate": (current.get("pubdate") or "")[:10],  # YYYY-MM-DD only
+            "publisher": (current.get("publishers") or [""])[0],
+            "tags": ", ".join(current.get("tags") or []),
+            "series": current.get("series") or "",
+            "series_index": str(current.get("series_index") or ""),
+            "comments": current.get("comments") or "",
+            "languages": ", ".join(current.get("languages") or []),
+            "rating": str(int((current.get("rating") or 0) / 2)),  # 0-10 → 0-5 stars
+        }
+
+        post_resp = self._session.post(
+            f"{self._base_url}/edit/{book_id}",
+            data=form,
+            headers={"X-CSRFToken": csrf, "X-Requested-With": "XMLHttpRequest"},
+        )
+        if post_resp.ok:
+            log.debug("CWA: book %d author updated to %r", book_id, correct_author)
+            return True
+        log.warning(
+            "CWA: failed to update author for book %d: HTTP %d",
+            book_id, post_resp.status_code,
+        )
+        return False
 
     def _login(self) -> None:
         """Login to CWA via the web form, storing the session cookie."""

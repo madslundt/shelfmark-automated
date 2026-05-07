@@ -112,6 +112,7 @@ def _make_config(**overrides):
         full_sync_interval_seconds=0,
         read_status_sync_interval_seconds=86400,
         fix_metadata=True,
+        sync_on_start=False,
         log_level="INFO",
     )
     return Config(**{**defaults, **overrides})
@@ -291,6 +292,7 @@ def test_sync_read_status_marks_found_book():
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
         fix_metadata=True,
+        sync_on_start=False,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -321,6 +323,7 @@ def test_sync_read_status_skips_book_not_in_library():
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
         fix_metadata=True,
+        sync_on_start=False,
         log_level="INFO",
     )
     book = Book("Unknown Book", "Nobody", source="hardcover")
@@ -352,6 +355,7 @@ def test_sync_read_status_skips_already_processed(tmp_path):
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
         fix_metadata=True,
+        sync_on_start=False,
         log_level="INFO",
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
@@ -383,6 +387,7 @@ def test_sync_read_status_no_cwa_client_exits_early():
         full_sync_interval_seconds=86400,
         read_status_sync_interval_seconds=86400,
         fix_metadata=True,
+        sync_on_start=False,
         log_level="INFO",
     )
 
@@ -501,3 +506,70 @@ def test_sync_metadata_once_skips_no_mismatch():
         sync_metadata_once(config, client)
 
     client.update_book_author.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Config: sync_on_start
+# ---------------------------------------------------------------------------
+
+def test_config_sync_on_start_defaults_false():
+    with patch.dict(os.environ, {}, clear=True):
+        c = Config.from_env()
+    assert c.sync_on_start is False
+
+
+def test_config_sync_on_start_enabled_by_env():
+    with patch.dict(os.environ, {"SYNC_ON_START": "true"}):
+        c = Config.from_env()
+    assert c.sync_on_start is True
+
+
+def test_config_sync_on_start_disabled_explicitly():
+    with patch.dict(os.environ, {"SYNC_ON_START": "false"}):
+        c = Config.from_env()
+    assert c.sync_on_start is False
+
+
+def test_sync_on_start_runs_read_status_and_metadata(tmp_path):
+    """SYNC_ON_START=true triggers both syncs before the main loop."""
+    from main import main
+    config_env = {
+        "SYNC_ON_START": "true",
+        "SYNC_INTERVAL_SECONDS": "0",
+        "READ_STATUS_SYNC_INTERVAL_SECONDS": "0",  # disabled in loop
+        "CWA_URL": "http://cwa:8083",
+        "CWA_USERNAME": "admin",
+        "CWA_PASSWORD": "secret",
+        "HARDCOVER_API_KEY": "key",
+    }
+    with patch.dict(os.environ, config_env, clear=True), \
+         patch("main.sync_read_status_once") as mock_rs, \
+         patch("main.sync_metadata_once") as mock_meta, \
+         patch("main.sync_once"), \
+         patch("main.CWAClient"):
+        main()
+
+    mock_rs.assert_called_once()
+    mock_meta.assert_called_once()
+
+
+def test_sync_on_start_false_does_not_run_early(tmp_path):
+    """SYNC_ON_START not set → no early sync run."""
+    from main import main
+    config_env = {
+        "SYNC_INTERVAL_SECONDS": "0",
+        "READ_STATUS_SYNC_INTERVAL_SECONDS": "0",
+        "CWA_URL": "http://cwa:8083",
+        "CWA_USERNAME": "admin",
+        "CWA_PASSWORD": "secret",
+        "HARDCOVER_API_KEY": "key",
+    }
+    with patch.dict(os.environ, config_env, clear=True), \
+         patch("main.sync_read_status_once") as mock_rs, \
+         patch("main.sync_metadata_once") as mock_meta, \
+         patch("main.sync_once"), \
+         patch("main.CWAClient"):
+        main()
+
+    mock_rs.assert_not_called()
+    mock_meta.assert_not_called()

@@ -45,6 +45,7 @@ class Config:
     full_sync_interval_seconds: int
     read_status_sync_interval_seconds: int
     fix_metadata: bool
+    sync_on_start: bool
     log_level: str
 
     @classmethod
@@ -109,6 +110,9 @@ class Config:
             read_status_sync_interval_seconds=read_status_sync_interval,
             fix_metadata=os.environ.get("FIX_METADATA", "true").strip().lower() not in {
                 "false", "0", "no"
+            },
+            sync_on_start=os.environ.get("SYNC_ON_START", "false").strip().lower() not in {
+                "false", "0", "no", ""
             },
             log_level=optional("LOG_LEVEL") or "INFO",
         )
@@ -487,7 +491,7 @@ def main() -> None:
     log.info(
         "shelfmark-automated starting up  "
         "(interval=%d-%ds, full_sync=%ds, read_status_sync=%s, fix_metadata=%s, "
-        "cwa=%s, shelfmark=%s, state=%s)",
+        "sync_on_start=%s, cwa=%s, shelfmark=%s, state=%s)",
         config.sync_interval_min_seconds,
         config.sync_interval_max_seconds,
         config.full_sync_interval_seconds,
@@ -495,6 +499,7 @@ def main() -> None:
         if config.read_status_sync_interval_seconds > 0
         else "disabled",
         "enabled" if config.fix_metadata else "disabled",
+        "yes" if config.sync_on_start else "no",
         config.cwa_url or "not configured",
         config.shelfmark_url or "not configured",
         config.state_file or "disabled",
@@ -518,6 +523,19 @@ def main() -> None:
     state: StateManager | None = None
     if config.state_file is not None:
         state = StateManager(config.state_file)
+
+    if config.sync_on_start:
+        log.info("SYNC_ON_START: running read status sync and metadata fix before main loop")
+        try:
+            sync_read_status_once(config, cwa_read_client, state)
+            if state is not None:
+                state.set_last_read_status_sync()
+        except Exception as exc:  # noqa: BLE001
+            log.error("Read status sync on start failed: %s", exc, exc_info=True)
+        try:
+            sync_metadata_once(config, cwa_read_client)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Metadata fix on start failed: %s", exc, exc_info=True)
 
     try:
         while True:

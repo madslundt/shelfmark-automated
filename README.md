@@ -68,6 +68,7 @@ environment:
   - SYNC_INTERVAL_MAX_SECONDS=900          # random upper bound (default 15 min)
   - STATE_FILE=/data/state.db              # persist incremental state (mount volume at /data)
   - READ_STATUS_SYNC_INTERVAL_SECONDS=86400  # mark read books in CWA once a day (0 to disable)
+  - SYNC_ON_START=true                     # run read-status sync + metadata fix on every container start
   - PUID=0                                 # UID to run as (0 = root, needed if /data mount is root-owned)
   - PGID=0                                 # GID to run as
 ```
@@ -318,6 +319,7 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
 | `READ_STATUS_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to sync read status from Hardcover/Goodreads to CWA. Set to `0` to disable entirely. Requires `CWA_USERNAME` and `CWA_PASSWORD`. |
 | `FIX_METADATA` | No | `true` | Automatically correct wrong author metadata in CWA. Runs on the same schedule as read-status sync (both shelves). Set to `false` to disable. Requires **"Edit books"** permission for your CWA user (Admin → Edit User). |
+| `SYNC_ON_START` | No | `false` | Run read-status sync and metadata fix immediately when the container starts, before the normal schedule kicks in. Useful when you restart Docker and want an immediate sync rather than waiting for the next interval. |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PUID` | No | `1000` | UID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
 | `PGID` | No | `1000` | GID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |

@@ -15,6 +15,7 @@ Key findings from live testing:
 from __future__ import annotations
 
 import base64
+import html as _html
 import logging
 import re
 import urllib.parse
@@ -416,8 +417,16 @@ class CWAClient:
 
         return self._post_read_status(book_id)
 
-    def update_book_author(self, book_id: int, correct_author: str) -> bool:
-        """Update the author field of a book via CWA's edit form.
+    def update_book_author(
+        self,
+        book_id: int,
+        correct_author: str,
+        correct_title: str | None = None,
+    ) -> bool:
+        """Update the author (and optionally title) of a book via CWA's admin edit form.
+
+        Reads current metadata by scraping /admin/book/<id> (same ID system as OPDS).
+        Do NOT use /ajax/book/<id> — it uses a different ID system than OPDS download links.
 
         Requires the CWA user to have 'Edit books' permission (Admin → Edit User).
         Returns True on success, False on any failure.
@@ -431,23 +440,8 @@ class CWAClient:
         if not self._authenticated:
             self._login()
 
-        # Fetch current metadata to preserve all fields we are not changing.
-        ajax_resp = self._session.get(f"{self._base_url}/ajax/book/{book_id}")
-        if not ajax_resp.ok:
-            log.warning(
-                "CWA: failed to fetch metadata for book %d: HTTP %d",
-                book_id, ajax_resp.status_code,
-            )
-            return False
-        try:
-            current = ajax_resp.json()
-        except Exception:
-            log.warning(
-                "CWA: /ajax/book/%d returned non-JSON body (empty or HTML) — skipping", book_id
-            )
-            return False
-
-        # Fetch the admin edit page to get a fresh CSRF token and form structure.
+        # Fetch the admin edit page for current metadata AND CSRF token.
+        # /admin/book/<id> uses the same ID as /opds/download/<id>/ (OPDS download ID).
         edit_url = f"{self._base_url}/admin/book/{book_id}"
         edit_get = self._session.get(edit_url)
         if not edit_get.ok:
@@ -457,26 +451,51 @@ class CWAClient:
                 book_id, edit_get.status_code,
             )
             return False
-        m = re.search(r'name="csrf_token"[^>]+value="([^"]+)"', edit_get.text)
+
+        page_html = edit_get.text
+
+        m = re.search(r'name="csrf_token"[^>]+value="([^"]+)"', page_html)
         if not m:
-            m = re.search(r'csrf_token.*?value="([^"]+)"', edit_get.text, re.DOTALL)
+            m = re.search(r'csrf_token.*?value="([^"]+)"', page_html, re.DOTALL)
         csrf = m.group(1) if m else self._csrf_token
 
-        # Build the edit form payload with the corrected author.
+        def _field(name: str) -> str:
+            """Scrape a single input field value from the admin edit page."""
+            fm = re.search(rf'name="{re.escape(name)}"[^>]*value="([^"]*)"', page_html)
+            if fm:
+                return _html.unescape(fm.group(1))
+            fm = re.search(rf'value="([^"]*)"[^>]*name="{re.escape(name)}"', page_html)
+            return _html.unescape(fm.group(1)) if fm else ""
+
+        def _textarea(name: str) -> str:
+            """Scrape a textarea value from the admin edit page."""
+            fm = re.search(
+                rf'<textarea[^>]*name="{re.escape(name)}"[^>]*>(.*?)</textarea>',
+                page_html, re.DOTALL,
+            )
+            return _html.unescape(fm.group(1)) if fm else ""
+
         form: dict[str, str] = {
             "book_id": str(book_id),
             "csrf_token": csrf,
-            "title": current.get("title", ""),
+            "title": correct_title if correct_title is not None else _field("title"),
             "authors": correct_author,
-            "pubdate": (current.get("pubdate") or "")[:10],  # YYYY-MM-DD only
-            "publisher": (current.get("publishers") or [""])[0],
-            "tags": ", ".join(current.get("tags") or []),
-            "series": current.get("series") or "",
-            "series_index": str(current.get("series_index") or ""),
-            "comments": current.get("comments") or "",
-            "languages": ", ".join(current.get("languages") or []),
-            "rating": str(int(float(current.get("rating") or 0) / 2)),  # 0-10 → 0-5 stars
+            "tags": _field("tags"),
+            "series": _field("series"),
+            "series_index": _field("series_index"),
+            "pubdate": _field("pubdate"),
+            "publisher": _field("publisher"),
+            "languages": _field("languages"),
+            "rating": _field("rating"),
+            "comments": _textarea("comments"),
+            "cover_url": _field("cover_url"),
         }
+
+        # Preserve all book identifiers (amazon, goodreads, isbn, hardcover-id, etc.)
+        for im in re.finditer(
+            r'name="(identifier-(?:type|val)-\d+)"[^>]*value="([^"]*)"', page_html
+        ):
+            form[im.group(1)] = _html.unescape(im.group(2))
 
         post_resp = self._session.post(
             edit_url,

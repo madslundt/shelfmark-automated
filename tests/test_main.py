@@ -492,7 +492,7 @@ def test_sync_metadata_once_calls_update_for_mismatch():
          patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")):
         sync_metadata_once(config, client)
 
-    client.update_book_author.assert_called_once_with(42, "Nicola Sanders")
+    client.update_book_author.assert_called_once_with(42, "Nicola Sanders", "All The Lies")
 
 
 def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():

@@ -429,34 +429,33 @@ def test_find_mismatched_author_returns_none_when_id_missing():
 # CWAClient.update_book_author
 # ---------------------------------------------------------------------------
 
-_MOCK_AJAX_BOOK_RESPONSE = {
-    "title": "All the Lies We Told",
-    "authors": ["Jennifer Harvey"],
-    "publishers": ["Bookouture"],
-    "pubdate": "2023-03-15T00:00:00+00:00",
-    "tags": ["Fiction", "Thriller"],
-    "series": None,
-    "series_index": None,
-    "comments": "<p>A gripping thriller.</p>",
-    "languages": ["eng"],
-    "rating": 8,
-}
-
-_EDIT_PAGE_HTML = '<input type="hidden" name="csrf_token" value="test-csrf-token">'
+_EDIT_PAGE_HTML = """\
+<input type="hidden" name="csrf_token" value="test-csrf-token">
+<input type="hidden" name="book_id" value="42">
+<input type="text" class="form-control" name="title" id="title" value="All the Lies We Told">
+<input type="text" class="form-control" name="authors" id="authors" value="Jennifer Harvey">
+<input type="text" class="form-control" name="tags" id="tags" value="Fiction, Thriller">
+<input type="text" class="form-control" name="series" id="series" value="">
+<input type="number" class="form-control" name="series_index" id="series_index" value="1">
+<input type="text" class="form-control" name="pubdate" id="pubdate" value="2023-03-15">
+<input type="text" class="form-control" name="publisher" id="publisher" value="Bookouture">
+<input type="text" class="form-control" name="languages" id="languages" value="English">
+<input type="number" name="rating" id="rating" value="4"/>
+<textarea name="comments" rows="7">&lt;p&gt;A gripping thriller.&lt;/p&gt;</textarea>
+<input type="text" name="cover_url" id="cover_url" value="">
+"""
 
 
 def test_update_book_author_success():
-    """Successful update returns True and POSTs corrected author."""
+    """Successful update returns True and POSTs corrected author from admin page."""
     client = CWAClient("http://cwa:8083", "user", "pass")
     client._authenticated = True
     client._csrf_token = "test-csrf-token"
 
-    mock_ajax = MagicMock(ok=True)
-    mock_ajax.json.return_value = _MOCK_AJAX_BOOK_RESPONSE
     mock_edit_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
     mock_edit_post = MagicMock(ok=True, status_code=200)
 
-    with patch.object(client._session, "get", side_effect=[mock_ajax, mock_edit_get]), \
+    with patch.object(client._session, "get", return_value=mock_edit_get), \
          patch.object(client._session, "post", return_value=mock_edit_post) as mock_post:
         result = client.update_book_author(42, "Nicola Sanders")
 
@@ -466,31 +465,46 @@ def test_update_book_author_success():
     assert call_data[1]["data"]["title"] == "All the Lies We Told"
 
 
-def test_update_book_author_returns_false_when_ajax_fails():
-    """If /ajax/book/<id> returns non-2xx, returns False."""
+def test_update_book_author_uses_correct_title_when_provided():
+    """When correct_title is passed it overrides the value scraped from the admin page."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "test-csrf-token"
+
+    mock_edit_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
+    mock_edit_post = MagicMock(ok=True, status_code=200)
+
+    with patch.object(client._session, "get", return_value=mock_edit_get), \
+         patch.object(client._session, "post", return_value=mock_edit_post) as mock_post:
+        result = client.update_book_author(42, "Nicola Sanders", correct_title="All the Lies")
+
+    assert result is True
+    assert mock_post.call_args[1]["data"]["title"] == "All the Lies"
+
+
+def test_update_book_author_returns_false_when_admin_page_fails():
+    """If /admin/book/<id> returns non-2xx, returns False."""
     client = CWAClient("http://cwa:8083", "user", "pass")
     client._authenticated = True
     client._csrf_token = "tok"
 
-    mock_ajax = MagicMock(ok=False, status_code=404)
-    with patch.object(client._session, "get", return_value=mock_ajax):
+    mock_admin = MagicMock(ok=False, status_code=404)
+    with patch.object(client._session, "get", return_value=mock_admin):
         result = client.update_book_author(42, "Nicola Sanders")
 
     assert result is False
 
 
 def test_update_book_author_returns_false_when_edit_post_fails():
-    """If POST /edit/<id> returns non-2xx, returns False."""
+    """If POST /admin/book/<id> returns non-2xx, returns False."""
     client = CWAClient("http://cwa:8083", "user", "pass")
     client._authenticated = True
     client._csrf_token = "tok"
 
-    mock_ajax = MagicMock(ok=True)
-    mock_ajax.json.return_value = _MOCK_AJAX_BOOK_RESPONSE
     mock_edit_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
     mock_edit_post = MagicMock(ok=False, status_code=403)
 
-    with patch.object(client._session, "get", side_effect=[mock_ajax, mock_edit_get]), \
+    with patch.object(client._session, "get", return_value=mock_edit_get), \
          patch.object(client._session, "post", return_value=mock_edit_post):
         result = client.update_book_author(42, "Nicola Sanders")
 

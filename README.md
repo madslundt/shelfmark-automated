@@ -1,14 +1,16 @@
 # shelfmark-automated
 
-Syncs your "Want to Read" lists from **Hardcover** and **Goodreads** with your **Calibre-Web Automated (CWA)** library and automatically queues missing books for download in **Shelfmark**.
+Syncs your **Hardcover** and **Goodreads** reading lists with your **Calibre-Web Automated (CWA)** library: queues missing "Want to Read" books for download in **Shelfmark**, and marks fully-read books as read in CWA.
 
 ## How it works
+
+**Download sync** (every 2–15 minutes by default):
 
 1. Fetches your "Want to Read" books from Hardcover (GraphQL) and Goodreads (RSS)
 2. Skips books already handled in a previous run *(incremental mode — see below)*
 3. Checks CWA via OPDS to skip books you already own
 4. Submits missing books to Shelfmark for download
-5. Sleeps a random interval and repeats *(default: 2–15 minutes)*
+5. Sleeps a random interval and repeats
 
 ```
 Hardcover ──┐
@@ -18,6 +20,21 @@ Goodreads ──┘
 
 Once a day (configurable) a full verification pass re-checks all books regardless of state,
 so nothing is permanently missed if a request fails or a book gets removed from your library.
+
+**Read status sync** (once a day by default — see [Read status sync](#read-status-sync)):
+
+1. Fetches your fully-read books from Hardcover (status: Read) and Goodreads (`shelf=read`)
+2. Skips books whose read status was already synced in a previous run
+3. Finds each book in CWA via OPDS title/author matching
+4. Marks matched books as read in CWA via its web session API
+
+```
+Hardcover ──┐
+            ├──▶ deduplicate ──▶ state filter ──▶ CWA lookup ──▶ CWA mark as read
+Goodreads ──┘
+```
+
+Only **fully completed** reads are synced — currently-reading / in-progress books are never touched.
 
 ---
 
@@ -47,11 +64,12 @@ environment:
   - SHELFMARK_URL=http://192.168.1.100:8084
   - SHELFMARK_USERNAME=your_shelfmark_username  # leave blank if AUTH_METHOD=none
   - SHELFMARK_PASSWORD=your_shelfmark_password
-  - SYNC_INTERVAL_MIN_SECONDS=120   # random lower bound (default 2 min)
-  - SYNC_INTERVAL_MAX_SECONDS=900   # random upper bound (default 15 min)
-  - STATE_FILE=/data/state.db       # persist incremental state (mount volume at /data)
-  - PUID=0                          # UID to run as (0 = root, needed if /data mount is root-owned)
-  - PGID=0                          # GID to run as
+  - SYNC_INTERVAL_MIN_SECONDS=120          # random lower bound (default 2 min)
+  - SYNC_INTERVAL_MAX_SECONDS=900          # random upper bound (default 15 min)
+  - STATE_FILE=/data/state.db              # persist incremental state (mount volume at /data)
+  - READ_STATUS_SYNC_INTERVAL_SECONDS=86400  # mark read books in CWA once a day (0 to disable)
+  - PUID=0                                 # UID to run as (0 = root, needed if /data mount is root-owned)
+  - PGID=0                                 # GID to run as
 ```
 
 > **Note on `.local` hostnames:** `homeassistant.local` and similar mDNS hostnames
@@ -165,6 +183,7 @@ services:
       - SYNC_INTERVAL_MIN_SECONDS=120
       - SYNC_INTERVAL_MAX_SECONDS=900
       - STATE_FILE=/data/state.db
+      - READ_STATUS_SYNC_INTERVAL_SECONDS=86400
       - LOG_LEVEL=INFO
       - PUID=0   # set to 0 if your volume mount is root-owned
       - PGID=0
@@ -297,9 +316,60 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `SYNC_INTERVAL_SECONDS` | No | — | Legacy fixed interval. Overrides min/max when set to `N > 0`. Set to `0` to run once and exit. |
 | `STATE_FILE` | No | — | Path to the SQLite state DB for incremental sync. Auto-detected as `/data/state.db` when `/data/` exists. |
 | `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
+| `READ_STATUS_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to sync read status from Hardcover/Goodreads to CWA. Set to `0` to disable entirely. Requires `CWA_USERNAME` and `CWA_PASSWORD`. |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PUID` | No | `1000` | UID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
 | `PGID` | No | `1000` | GID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
+
+---
+
+## Read status sync
+
+When `CWA_USERNAME` and `CWA_PASSWORD` are set, the service also syncs your read status back into CWA once a day (configurable via `READ_STATUS_SYNC_INTERVAL_SECONDS`).
+
+### What it does
+
+- Fetches books you have marked as **Read** (not currently-reading) from Hardcover and Goodreads
+- Finds each book in your CWA library via the same OPDS title/author matching used by the download sync
+- Marks matched books as read in CWA using its web session API (`POST /ajax/book/{id}/readstatus`)
+
+### When it runs
+
+| Situation | Behaviour |
+|-----------|-----------|
+| First container start (no prior timestamp) | Runs immediately |
+| Subsequent starts with `STATE_FILE` set | Runs only once the configured interval has elapsed since the last sync |
+| `STATE_FILE` not set | Runs every loop iteration (no persistent timing — sets every 2–15 min) |
+| `READ_STATUS_SYNC_INTERVAL_SECONDS=0` | Disabled entirely — never runs |
+
+### Logging
+
+At the default `INFO` level you will see:
+```
+CWA: logged in as 'admin'              # once per session on first read status sync
+Read status sync: 3 marked as read, 1 not found in library
+```
+
+Set `LOG_LEVEL=DEBUG` for per-book detail:
+```
+CWA: found 'The Martian' (id=42) via query 'The Martian'
+CWA: book 42 marked as read
+Read status sync: 'Unknown Title' not found in CWA — skipping
+```
+
+### Requirements
+
+- `CWA_USERNAME` and `CWA_PASSWORD` must be set — read status is per-user and requires a logged-in web session (OPDS basic auth alone is not sufficient)
+- The CWA web interface must be reachable at `CWA_URL` (same URL used for OPDS)
+
+### Common issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `CWA login failed — check CWA_USERNAME and CWA_PASSWORD` | Wrong credentials | Verify you can log in to the CWA web UI with the same credentials |
+| `Read status sync: 'Title' not found in CWA` | Book is not yet in your library | Download it first via the download sync, or add it to CWA manually |
+| `Read status sync: 0 marked as read` every run | No books in `shelf=read` / Hardcover Read status | Check your Goodreads read shelf or Hardcover read list is populated |
+| Read status not updating despite sync running | CWA session cookie expired mid-run | Next run re-authenticates automatically |
 
 ---
 
@@ -338,7 +408,7 @@ shelfmark-automated/
 │   ├── models.py       # Book dataclass + normalisation
 │   ├── hardcover.py    # Hardcover GraphQL client
 │   ├── goodreads.py    # Goodreads RSS parser
-│   ├── cwa.py          # CWA OPDS library checker
+│   ├── cwa.py          # CWA OPDS library checker + web session client (read status)
 │   ├── shelfmark.py    # Shelfmark API client (session auth + metadata search)
 │   └── state.py        # SQLite state manager for incremental sync
 ├── main.py             # Entry point: config, sync loop, deduplication

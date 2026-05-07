@@ -36,6 +36,29 @@ _WANT_TO_READ_QUERY = """
 """
 
 
+_READ_QUERY = """
+{
+  me {
+    user_books(where: {status_id: {_eq: 3}}) {
+      book {
+        id
+        title
+        contributions {
+          author {
+            name
+          }
+        }
+        default_physical_edition {
+          isbn_10
+          isbn_13
+        }
+      }
+    }
+  }
+}
+"""
+
+
 def _with_retry(fn, max_attempts: int = 3, base_delay: float = 1.0):
     """Call fn() up to max_attempts times with exponential backoff.
 
@@ -147,4 +170,91 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
             continue
 
     log.info("Hardcover: fetched %d 'Want to Read' books", len(books))
+    return books
+
+
+def fetch_read(api_key: str) -> list[Book]:
+    """Fetch fully-read books (status_id=3) from Hardcover.
+
+    Only fetches books with completed read status. Currently-reading (status_id=2)
+    and want-to-read (status_id=1) books are not included.
+
+    Args:
+        api_key: Hardcover Bearer token.
+
+    Returns:
+        List of Book objects with source="hardcover".
+
+    Raises:
+        requests.HTTPError: On HTTP 401 (invalid API key) or unrecoverable errors.
+        requests.ConnectionError / requests.Timeout: After all retries exhausted.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    })
+
+    def _do_request():
+        resp = session.post(
+            HARDCOVER_GRAPHQL_URL,
+            json={"query": _READ_QUERY},
+            timeout=30,
+        )
+        if resp.status_code == 401:
+            raise requests.HTTPError(
+                "Hardcover API key is invalid or expired (HTTP 401)",
+                response=resp,
+            )
+        resp.raise_for_status()
+        return resp
+
+    resp = _with_retry(_do_request)
+    data = resp.json()
+
+    if "errors" in data:
+        for err in data["errors"]:
+            log.warning("Hardcover GraphQL error: %s", err.get("message", err))
+
+    books: list[Book] = []
+    try:
+        me_list = data["data"]["me"]
+        if not me_list:
+            log.warning("Hardcover: 'me' returned empty list — check API key / user")
+            return []
+        user_books = me_list[0]["user_books"]
+    except (KeyError, TypeError, IndexError) as exc:
+        log.error("Unexpected Hardcover response structure: %s", exc)
+        return []
+
+    for ub in user_books:
+        try:
+            book_data = ub["book"]
+            title = (book_data.get("title") or "").strip()
+            if not title:
+                continue
+
+            contributions = book_data.get("contributions") or []
+            author = ""
+            if contributions:
+                author = (contributions[0].get("author") or {}).get("name", "") or ""
+            author = author.strip()
+
+            edition = book_data.get("default_physical_edition") or {}
+            isbn_10 = (edition.get("isbn_10") or "").strip() or None
+            isbn_13 = (edition.get("isbn_13") or "").strip() or None
+
+            books.append(Book(
+                title=title,
+                author=author,
+                isbn_10=isbn_10,
+                isbn_13=isbn_13,
+                source="hardcover",
+                source_id=str(book_data.get("id", "")),
+            ))
+        except (KeyError, TypeError) as exc:
+            log.warning("Skipping malformed Hardcover entry: %s", exc)
+            continue
+
+    log.info("Hardcover: fetched %d read books", len(books))
     return books

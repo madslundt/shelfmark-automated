@@ -8,7 +8,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 from src.models import Book
-from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
+from src.state import REASON_IMPORTED, REASON_READ_STATUS_SET, REASON_SUBMITTED, StateManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -318,4 +318,62 @@ def test_migration_renames_in_library_to_imported(tmp_path):
         "SELECT reason FROM handled_books WHERE key = ?", (book.normalized_key(),)
     ).fetchone()
     assert raw[0] == REASON_IMPORTED
+    state.close()
+
+
+# ---------------------------------------------------------------------------
+# REASON_READ_STATUS_SET constant
+# ---------------------------------------------------------------------------
+
+def test_read_status_constant():
+    assert REASON_READ_STATUS_SET == "read_status_set"
+
+
+# ---------------------------------------------------------------------------
+# is_read_status_set / mark_read_status_set
+# ---------------------------------------------------------------------------
+
+def test_is_read_status_set_false_initially(tmp_path):
+    state = StateManager(str(tmp_path / "state.db"))
+    book = Book("The Martian", "Andy Weir")
+    assert state.is_read_status_set(book) is False
+    state.close()
+
+
+def test_mark_read_status_set_and_retrieve(tmp_path):
+    state = StateManager(str(tmp_path / "state.db"))
+    book = Book("The Martian", "Andy Weir")
+    state.mark_read_status_set(book)
+    state.save()
+    assert state.is_read_status_set(book) is True
+    state.close()
+
+
+def test_read_status_does_not_affect_is_handled(tmp_path):
+    # Marking read status must NOT cause is_handled() to return True
+    state = StateManager(str(tmp_path / "state.db"))
+    book = Book("The Martian", "Andy Weir")
+    state.mark_read_status_set(book)
+    state.save()
+    assert state.is_handled(book) is False
+    state.close()
+
+
+# ---------------------------------------------------------------------------
+# get_last_read_status_sync / set_last_read_status_sync
+# ---------------------------------------------------------------------------
+
+def test_get_last_read_status_sync_returns_none_initially(tmp_path):
+    state = StateManager(str(tmp_path / "state.db"))
+    assert state.get_last_read_status_sync() is None
+    state.close()
+
+
+def test_set_and_get_last_read_status_sync(tmp_path):
+    from datetime import datetime, timedelta
+    state = StateManager(str(tmp_path / "state.db"))
+    state.set_last_read_status_sync()
+    result = state.get_last_read_status_sync()
+    assert result is not None
+    assert abs((result - datetime.now()).total_seconds()) < 5
     state.close()

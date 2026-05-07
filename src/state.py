@@ -11,9 +11,10 @@ from .models import Book
 
 log = logging.getLogger(__name__)
 
-REASON_IN_LIBRARY = "in_library"   # legacy value — migrated to REASON_IMPORTED on open
-REASON_IMPORTED   = "imported"
-REASON_SUBMITTED  = "submitted"
+REASON_IN_LIBRARY    = "in_library"   # legacy value — migrated to REASON_IMPORTED on open
+REASON_IMPORTED      = "imported"
+REASON_SUBMITTED     = "submitted"
+REASON_READ_STATUS_SET = "read_status_set"
 
 
 class StateManager:
@@ -64,6 +65,45 @@ class StateManager:
             (book.normalized_key(), reason, datetime.now().isoformat(timespec="seconds")),
         )
         self._dirty = True
+
+    def is_read_status_set(self, book: Book) -> bool:
+        """Return True if this book's read status was already synced to CWA."""
+        row = self._conn.execute(
+            "SELECT 1 FROM read_status_books WHERE key = ?",
+            (book.normalized_key(),),
+        ).fetchone()
+        return row is not None
+
+    def mark_read_status_set(self, book: Book) -> None:
+        """Record that this book's read status was synced. Deferred — call save() to commit."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO read_status_books (key, handled_at) VALUES (?, ?)",
+            (book.normalized_key(), datetime.now().isoformat(timespec="seconds")),
+        )
+        self._dirty = True
+
+    def get_last_read_status_sync(self) -> datetime | None:
+        """Return the timestamp of the last read status sync, or None."""
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_read_status_sync_at'",
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return datetime.fromisoformat(row[0])
+        except ValueError:
+            return None
+
+    def set_last_read_status_sync(self) -> None:
+        """Record the current time as the last read status sync timestamp."""
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_read_status_sync_at', ?)",
+                (datetime.now().isoformat(timespec="seconds"),),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            log.error("Failed to record read status sync timestamp: %s", exc)
 
     def save(self) -> None:
         """Commit pending marks to disk. No-op if nothing was marked this pass."""
@@ -130,6 +170,10 @@ class StateManager:
             CREATE TABLE IF NOT EXISTS meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS read_status_books (
+                key        TEXT PRIMARY KEY,
+                handled_at TEXT NOT NULL
             );
         """)
         self._conn.commit()

@@ -535,8 +535,7 @@ class CWAClient:
             headers["X-CSRFToken"] = self._csrf_token
         try:
             resp = self._session.post(
-                f"{self._base_url}/ajax/book/{book_id}/readstatus",
-                data={"is_read": 1},
+                f"{self._base_url}/ajax/toggleread/{book_id}",
                 headers=headers,
                 timeout=10,
             )

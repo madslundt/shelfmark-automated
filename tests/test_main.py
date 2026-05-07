@@ -1,7 +1,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from main import Config, deduplicate, sync_once
+from main import Config, deduplicate, sync_once, sync_read_status_once
+from src.cwa import CWAClient
 from src.models import Book
 from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
 
@@ -259,3 +260,116 @@ def test_sync_once_force_full_rechecks_submitted_books(tmp_path):
 
     mock_cwa.assert_called_once()
     state.close()
+
+
+# ---------------------------------------------------------------------------
+# sync_read_status_once tests
+# ---------------------------------------------------------------------------
+
+def test_sync_read_status_marks_found_book():
+    config = Config(
+        hardcover_api_key="key",
+        goodreads_rss_url=None,
+        cwa_url="http://cwa:8083",
+        cwa_username="admin",
+        cwa_password="secret",
+        shelfmark_url=None,
+        shelfmark_username=None,
+        shelfmark_password=None,
+        sync_interval_min_seconds=120,
+        sync_interval_max_seconds=900,
+        state_file=None,
+        full_sync_interval_seconds=86400,
+        log_level="INFO",
+    )
+    book = Book("The Martian", "Andy Weir", source="hardcover")
+
+    mock_cwa = MagicMock(spec=CWAClient)
+    mock_cwa.mark_as_read.return_value = True
+
+    with patch("main.hardcover.fetch_read", return_value=[book]), \
+         patch("main.cwa.find_book_in_library", return_value=42):
+        sync_read_status_once(config, mock_cwa, state=None)
+
+    mock_cwa.mark_as_read.assert_called_once_with(42)
+
+
+def test_sync_read_status_skips_book_not_in_library():
+    config = Config(
+        hardcover_api_key="key",
+        goodreads_rss_url=None,
+        cwa_url="http://cwa:8083",
+        cwa_username="admin",
+        cwa_password="secret",
+        shelfmark_url=None,
+        shelfmark_username=None,
+        shelfmark_password=None,
+        sync_interval_min_seconds=120,
+        sync_interval_max_seconds=900,
+        state_file=None,
+        full_sync_interval_seconds=86400,
+        log_level="INFO",
+    )
+    book = Book("Unknown Book", "Nobody", source="hardcover")
+
+    mock_cwa = MagicMock(spec=CWAClient)
+
+    with patch("main.hardcover.fetch_read", return_value=[book]), \
+         patch("main.cwa.find_book_in_library", return_value=None):
+        sync_read_status_once(config, mock_cwa, state=None)
+
+    mock_cwa.mark_as_read.assert_not_called()
+
+
+def test_sync_read_status_skips_already_processed(tmp_path):
+    from src.state import StateManager
+    state = StateManager(str(tmp_path / "state.db"))
+    config = Config(
+        hardcover_api_key="key",
+        goodreads_rss_url=None,
+        cwa_url="http://cwa:8083",
+        cwa_username="admin",
+        cwa_password="secret",
+        shelfmark_url=None,
+        shelfmark_username=None,
+        shelfmark_password=None,
+        sync_interval_min_seconds=120,
+        sync_interval_max_seconds=900,
+        state_file=None,
+        full_sync_interval_seconds=86400,
+        log_level="INFO",
+    )
+    book = Book("The Martian", "Andy Weir", source="hardcover")
+    state.mark_read_status_set(book)
+    state.save()
+
+    mock_cwa = MagicMock(spec=CWAClient)
+
+    with patch("main.hardcover.fetch_read", return_value=[book]):
+        sync_read_status_once(config, mock_cwa, state=state)
+
+    mock_cwa.mark_as_read.assert_not_called()
+    state.close()
+
+
+def test_sync_read_status_no_cwa_client_exits_early():
+    config = Config(
+        hardcover_api_key="key",
+        goodreads_rss_url=None,
+        cwa_url=None,
+        cwa_username=None,
+        cwa_password=None,
+        shelfmark_url=None,
+        shelfmark_username=None,
+        shelfmark_password=None,
+        sync_interval_min_seconds=120,
+        sync_interval_max_seconds=900,
+        state_file=None,
+        full_sync_interval_seconds=86400,
+        log_level="INFO",
+    )
+
+    with patch("main.hardcover.fetch_read", return_value=[]) as mock_fetch:
+        sync_read_status_once(config, cwa_client=None, state=None)
+
+    mock_fetch.assert_not_called()

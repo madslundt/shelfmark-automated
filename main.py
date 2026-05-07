@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from src import cwa, goodreads, hardcover
+from src.cwa import CWAAuthError, CWAClient
 from src.models import Book
 from src.shelfmark import ShelfmarkClient
 from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
@@ -292,6 +293,85 @@ def sync_once(
         state.save()
 
 
+def sync_read_status_once(
+    config: Config,
+    cwa_client: "CWAClient | None",
+    state: StateManager | None = None,
+) -> None:
+    """Fetch fully-read books and mark them as read in CWA.
+
+    Only processes books with a confirmed completion status:
+    Hardcover status_id=3 (Read) and Goodreads shelf=read.
+    Currently-reading / in-progress entries are never touched.
+    """
+    if not config.cwa_url or not cwa_client:
+        log.debug("Read status sync: CWA not configured — skipping")
+        return
+
+    books_hardcover: list[Book] = []
+    books_goodreads: list[Book] = []
+
+    if config.hardcover_api_key:
+        try:
+            books_hardcover = hardcover.fetch_read(config.hardcover_api_key)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Hardcover read fetch failed — skipping source: %s", exc)
+    else:
+        log.debug("Read status sync: Hardcover not configured — skipping")
+
+    if config.goodreads_rss_url:
+        try:
+            books_goodreads = goodreads.fetch_read(config.goodreads_rss_url)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Goodreads read fetch failed — skipping source: %s", exc)
+    else:
+        log.debug("Read status sync: Goodreads not configured — skipping")
+
+    all_books = deduplicate(books_hardcover + books_goodreads)
+    log.debug(
+        "Read status sync: %d unique read books (Hardcover: %d, Goodreads: %d)",
+        len(all_books), len(books_hardcover), len(books_goodreads),
+    )
+
+    if state is not None:
+        all_books = [b for b in all_books if not state.is_read_status_set(b)]
+        log.debug("Read status sync: %d books not yet synced", len(all_books))
+
+    if not all_books:
+        log.debug("Read status sync: nothing to process")
+        return
+
+    ok_count = 0
+    skip_count = 0
+    for book in all_books:
+        book_id = cwa.find_book_in_library(
+            book, config.cwa_url, config.cwa_username, config.cwa_password
+        )
+        if book_id is None:
+            log.debug("Read status sync: %r not found in CWA — skipping", book.title)
+            skip_count += 1
+            continue
+        try:
+            ok = cwa_client.mark_as_read(book_id)
+        except CWAAuthError as exc:
+            log.error("CWA auth failed during read status sync: %s", exc)
+            break
+        if ok:
+            ok_count += 1
+            if state is not None:
+                state.mark_read_status_set(book)
+        else:
+            log.warning("Read status sync: failed to mark %r (book_id=%d)", book.title, book_id)
+
+    log.info(
+        "Read status sync: %d marked as read, %d not found in library",
+        ok_count, skip_count,
+    )
+
+    if state is not None:
+        state.save()
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -332,6 +412,10 @@ def main() -> None:
         else None
     )
 
+    cwa_read_client: CWAClient | None = None
+    if config.cwa_url and config.cwa_username and config.cwa_password:
+        cwa_read_client = CWAClient(config.cwa_url, config.cwa_username, config.cwa_password)
+
     state: StateManager | None = None
     if config.state_file is not None:
         state = StateManager(config.state_file)
@@ -345,6 +429,11 @@ def main() -> None:
                     state.set_last_full_sync()
             except Exception as exc:  # noqa: BLE001
                 log.error("Sync pass failed with unexpected error: %s", exc, exc_info=True)
+
+            try:
+                sync_read_status_once(config, cwa_read_client, state)
+            except Exception as exc:  # noqa: BLE001
+                log.error("Read status sync pass failed: %s", exc, exc_info=True)
 
             if config.sync_interval_max_seconds <= 0:
                 log.info("SYNC_INTERVAL=0 — exiting after one pass")

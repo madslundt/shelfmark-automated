@@ -443,6 +443,12 @@ def sync_metadata_once(
     all_books = deduplicate(all_books)
     log.debug("Metadata fix: checking %d unique books", len(all_books))
 
+    # Build set of known correct authors from our book lists.
+    # If the "wrong" author in CWA is actually a correct author for a DIFFERENT book
+    # in our list, it likely means CWA has the book stored under a wrong title (bad
+    # ebook file metadata). Updating the author in that case makes things worse.
+    known_correct_authors = {b.author.lower() for b in all_books}
+
     ok_count = 0
     retry_queue: list[tuple[Book, int, str]] = []
     for book in all_books:
@@ -452,6 +458,13 @@ def sync_metadata_once(
         if result is None:
             continue
         book_id, wrong_author = result
+        if wrong_author in known_correct_authors:
+            log.debug(
+                "Metadata fix: skipping book %d %r — CWA author %r is a known correct "
+                "author (likely a CWA title mismatch, not a wrong author)",
+                book_id, book.title, wrong_author,
+            )
+            continue
         try:
             ok = cwa_client.update_book_author(book_id, book.author)
         except CWAAuthError as exc:

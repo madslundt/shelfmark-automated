@@ -495,6 +495,37 @@ def test_sync_metadata_once_calls_update_for_mismatch():
     client.update_book_author.assert_called_once_with(42, "Nicola Sanders")
 
 
+def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():
+    """If CWA's stored author is a known correct author for another book, skip the update.
+
+    This guards against CWA books with wrong title metadata: the sync finds a title
+    match to a different book from our list, but the stored author is actually correct
+    for the real book — updating it would make metadata worse.
+    """
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    # Our list has two books: "The Housemaid" by Freida McFadden, and "Winning Without Losing"
+    # by some other author. CWA has "Winning Without Losing" stored with author "freida mcfadden"
+    # (because it's actually The Housemaid under a wrong title).
+    book_housemaid = Book("The Housemaid", "Freida McFadden")
+    book_winning = Book("Winning Without Losing", "Martin Bjergegaard")
+
+    # find_mismatched_author returns a mismatch for "Winning Without Losing":
+    # CWA has it by "freida mcfadden" but our list says "Martin Bjergegaard"
+    def fake_find(book, *args, **kwargs):
+        if book.title == "Winning Without Losing":
+            return (99, "freida mcfadden")
+        return None
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book_housemaid, book_winning]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_mismatched_author", side_effect=fake_find):
+        sync_metadata_once(config, client)
+
+    # update_book_author must NOT be called — "freida mcfadden" is a known correct author
+    client.update_book_author.assert_not_called()
+
+
 def test_sync_metadata_once_skips_no_mismatch():
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()

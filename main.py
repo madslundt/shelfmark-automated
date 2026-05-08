@@ -18,7 +18,7 @@ from datetime import datetime
 
 from src import cwa, goodreads, hardcover
 from src.cwa import CWAAuthError, CWAClient
-from src.models import Book
+from src.models import Book, _normalize
 from src.shelfmark import ShelfmarkClient
 from src.state import REASON_IMPORTED, REASON_SUBMITTED, StateManager
 
@@ -412,15 +412,48 @@ def sync_read_status_once(
         state.save()
 
 
+def _build_metadata_updates(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
+    """Compare source book metadata with current CWA values, return fields to update.
+
+    Author is always corrected when different (normalized comparison).
+    All other fields are filled in only when the CWA field is currently empty,
+    preserving any metadata the user has already curated in CWA.
+    """
+    updates: dict[str, str] = {}
+
+    if book.author and _normalize(book.author) != _normalize(cwa_meta.get("authors", "")):
+        updates["authors"] = book.author
+
+    if book.description and not cwa_meta.get("comments", "").strip():
+        updates["comments"] = book.description
+
+    if book.series and not cwa_meta.get("series", "").strip():
+        updates["series"] = book.series
+        # series_index has no meaning without a series; always set it when adding a new series
+        if book.series_index:
+            updates["series_index"] = book.series_index
+
+    if book.publisher and not cwa_meta.get("publisher", "").strip():
+        updates["publisher"] = book.publisher
+
+    if book.pubdate and not cwa_meta.get("pubdate", "").strip():
+        updates["pubdate"] = book.pubdate
+
+    return updates
+
+
 def sync_metadata_once(
     config: Config,
     cwa_client: "CWAClient | None",
     dry_run: bool = False,
 ) -> None:
-    """Fetch all books from Hardcover/Goodreads and fix wrong author metadata in CWA.
+    """Fetch all books from Hardcover/Goodreads and sync their metadata into CWA.
 
-    Checks both read and want-to-read shelves. Skips silently when disabled
-    (FIX_METADATA=false) or when CWA is not configured.
+    Checks both read and want-to-read shelves. For each book found in the CWA
+    library, compares source metadata (author, description, series, publisher,
+    pubdate) against current CWA values and applies any updates needed.
+
+    Skips silently when disabled (FIX_METADATA=false) or when CWA is not configured.
     """
     if not config.fix_metadata:
         log.debug("Metadata fix: disabled via FIX_METADATA=false — skipping")
@@ -454,48 +487,65 @@ def sync_metadata_once(
     log.debug("Metadata fix: checking %d unique books", len(all_books))
 
     # Build set of known correct authors from our book lists.
-    # If the "wrong" author in CWA is actually a correct author for a DIFFERENT book
-    # in our list, it likely means CWA has the book stored under a wrong title (bad
-    # ebook file metadata). Updating the author in that case makes things worse.
+    # If the "wrong" author in CWA is a correct author for a DIFFERENT book in our list,
+    # CWA likely has that book stored under the wrong title — updating would make it worse.
     known_correct_authors = {b.author.lower() for b in all_books}
 
     ok_count = 0
-    retry_queue: list[tuple[Book, int, str]] = []
+    retry_queue: list[tuple[Book, int, dict[str, str]]] = []
     for book in all_books:
-        result = cwa.find_mismatched_author(
+        book_id = cwa.find_book_in_library(
             book, config.cwa_url, config.cwa_username, config.cwa_password
         )
-        if result is None:
+        if book_id is None:
             continue
-        book_id, wrong_author = result
-        if wrong_author in known_correct_authors:
+
+        cwa_meta = cwa_client.get_book_metadata(book_id)
+        if cwa_meta is None:
             log.debug(
-                "Metadata fix: skipping book %d %r — CWA author %r is a known correct "
-                "author (likely a CWA title mismatch, not a wrong author)",
-                book_id, book.title, wrong_author,
+                "Metadata fix: could not fetch admin page for book %d %r — skipping",
+                book_id, book.title,
             )
             continue
+
+        updates = _build_metadata_updates(book, cwa_meta)
+
+        if "authors" in updates:
+            cwa_author = cwa_meta.get("authors", "")
+            if cwa_author in known_correct_authors:
+                log.debug(
+                    "Metadata fix: skipping author update for book %d %r — CWA author %r "
+                    "is a known correct author (likely a CWA title mismatch)",
+                    book_id, book.title, cwa_author,
+                )
+                del updates["authors"]
+
+        if not updates:
+            log.debug("Metadata fix: book %d %r — all metadata up to date", book_id, book.title)
+            continue
+
         if dry_run:
             log.info(
-                "[DRY RUN] would fix author for book %d %r: %r → %r",
-                book_id, book.title, wrong_author, book.author,
+                "[DRY RUN] would update book %d %r: %s",
+                book_id, book.title, list(updates.keys()),
             )
             ok_count += 1
             continue
+
         try:
-            ok = cwa_client.update_book_author(book_id, book.author)
+            ok = cwa_client.update_book_metadata(book_id, updates)
         except CWAAuthError as exc:
             log.error("Metadata fix: CWA auth failed — stopping: %s", exc)
             break
         if ok:
             ok_count += 1
             log.info(
-                "Metadata fix: book %d %r — author corrected from %r to %r",
-                book_id, book.title, wrong_author, book.author,
+                "Metadata fix: book %d %r — updated fields: %s",
+                book_id, book.title, list(updates.keys()),
             )
         else:
             log.warning("Metadata fix: failed book %d %r — will retry", book_id, book.title)
-            retry_queue.append((book, book_id, wrong_author))
+            retry_queue.append((book, book_id, updates))
 
     for attempt in range(1, 4):
         if not retry_queue:
@@ -505,10 +555,10 @@ def sync_metadata_once(
             len(retry_queue), attempt,
         )
         time.sleep(5)
-        still_failing: list[tuple[Book, int, str]] = []
-        for book, book_id, wrong_author in retry_queue:
+        still_failing: list[tuple[Book, int, dict[str, str]]] = []
+        for book, book_id, updates in retry_queue:
             try:
-                ok = cwa_client.update_book_author(book_id, book.author)
+                ok = cwa_client.update_book_metadata(book_id, updates)
             except CWAAuthError as exc:
                 log.error("Metadata fix: CWA auth failed during retry — stopping: %s", exc)
                 retry_queue = still_failing
@@ -516,11 +566,11 @@ def sync_metadata_once(
             if ok:
                 ok_count += 1
                 log.info(
-                    "Metadata fix: book %d %r — author corrected on retry %d from %r to %r",
-                    book_id, book.title, attempt, wrong_author, book.author,
+                    "Metadata fix: book %d %r — updated on retry %d: %s",
+                    book_id, book.title, attempt, list(updates.keys()),
                 )
             else:
-                still_failing.append((book, book_id, wrong_author))
+                still_failing.append((book, book_id, updates))
         else:
             retry_queue = still_failing
 

@@ -516,3 +516,86 @@ def test_update_book_author_raises_without_credentials():
     client = CWAClient("http://cwa:8083", None, None)
     with pytest.raises(CWAAuthError):
         client.update_book_author(42, "Nicola Sanders")
+
+
+# ---------------------------------------------------------------------------
+# CWAClient.get_book_metadata
+# ---------------------------------------------------------------------------
+
+def test_get_book_metadata_returns_current_fields():
+    """get_book_metadata parses the admin edit page and returns all relevant fields."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+
+    mock_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
+    with patch.object(client._session, "get", return_value=mock_get):
+        meta = client.get_book_metadata(42)
+
+    assert meta is not None
+    assert meta["authors"] == "Jennifer Harvey"
+    assert meta["title"] == "All the Lies We Told"
+    assert meta["series"] == ""
+    assert meta["publisher"] == "Bookouture"
+    assert meta["pubdate"] == "2023-03-15"
+    assert "gripping thriller" in meta["comments"]
+
+
+def test_get_book_metadata_returns_none_when_admin_page_fails():
+    """If the admin page returns non-2xx, get_book_metadata returns None."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+
+    mock_get = MagicMock(ok=False, status_code=403)
+    with patch.object(client._session, "get", return_value=mock_get):
+        meta = client.get_book_metadata(42)
+
+    assert meta is None
+
+
+def test_get_book_metadata_raises_without_credentials():
+    client = CWAClient("http://cwa:8083", None, None)
+    with pytest.raises(CWAAuthError):
+        client.get_book_metadata(42)
+
+
+# ---------------------------------------------------------------------------
+# CWAClient.update_book_metadata
+# ---------------------------------------------------------------------------
+
+def test_update_book_metadata_applies_specified_fields():
+    """update_book_metadata merges updates into current page values and POSTs."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "test-csrf-token"
+
+    mock_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML)
+    mock_post = MagicMock(ok=True, status_code=200)
+
+    with patch.object(client._session, "get", return_value=mock_get), \
+         patch.object(client._session, "post", return_value=mock_post) as mock_post_call:
+        result = client.update_book_metadata(42, {
+            "authors": "Nicola Sanders", "series": "Liar Series",
+        })
+
+    assert result is True
+    posted = mock_post_call.call_args[1]["data"]
+    assert posted["authors"] == "Nicola Sanders"
+    assert posted["series"] == "Liar Series"
+    assert posted["title"] == "All the Lies We Told"   # unchanged from page
+
+
+def test_update_book_metadata_returns_false_when_admin_page_fails():
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+
+    mock_get = MagicMock(ok=False, status_code=404)
+    with patch.object(client._session, "get", return_value=mock_get):
+        result = client.update_book_metadata(42, {"authors": "Someone"})
+
+    assert result is False
+
+
+def test_update_book_metadata_raises_without_credentials():
+    client = CWAClient("http://cwa:8083", None, None)
+    with pytest.raises(CWAAuthError):
+        client.update_book_metadata(42, {"authors": "Someone"})

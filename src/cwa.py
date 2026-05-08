@@ -417,16 +417,33 @@ class CWAClient:
 
         return self._post_read_status(book_id)
 
-    def update_book_author(
-        self,
-        book_id: int,
-        correct_author: str,
-        correct_title: str | None = None,
-    ) -> bool:
-        """Update the author (and optionally title) of a book via CWA's admin edit form.
+    def get_book_metadata(self, book_id: int) -> dict[str, str] | None:
+        """Return current metadata for a book as scraped from the CWA admin page.
 
-        Reads current metadata by scraping /admin/book/<id> (same ID system as OPDS).
-        Do NOT use /ajax/book/<id> — it uses a different ID system than OPDS download links.
+        Returns None if the admin page is unreachable or returns a non-2xx status.
+        Raises CWAAuthError if credentials are not configured.
+        """
+        if not self._username or not self._password:
+            raise CWAAuthError(
+                "CWA_USERNAME and CWA_PASSWORD are required to read book metadata"
+            )
+        if not self._authenticated:
+            self._login()
+
+        resp = self._session.get(f"{self._base_url}/admin/book/{book_id}")
+        if not resp.ok:
+            log.debug("CWA: admin page for book %d returned HTTP %d", book_id, resp.status_code)
+            return None
+
+        _, fields = self._parse_admin_page(resp.text)
+        return fields
+
+    def update_book_metadata(self, book_id: int, updates: dict[str, str]) -> bool:
+        """Apply field updates to a book in CWA via the admin edit form.
+
+        Fetches the current admin page for existing values and CSRF token, merges
+        *updates* into them, then POSTs the full form.  Only keys present in
+        *updates* are changed; all other fields are preserved as-is.
 
         Requires the CWA user to have 'Edit books' permission (Admin → Edit User).
         Returns True on success, False on any failure.
@@ -436,12 +453,9 @@ class CWAClient:
             raise CWAAuthError(
                 "CWA_USERNAME and CWA_PASSWORD are required to edit book metadata"
             )
-
         if not self._authenticated:
             self._login()
 
-        # Fetch the admin edit page for current metadata AND CSRF token.
-        # /admin/book/<id> uses the same ID as /opds/download/<id>/ (OPDS download ID).
         edit_url = f"{self._base_url}/admin/book/{book_id}"
         edit_get = self._session.get(edit_url)
         if not edit_get.ok:
@@ -453,42 +467,13 @@ class CWAClient:
             return False
 
         page_html = edit_get.text
-
-        m = re.search(r'name="csrf_token"[^>]+value="([^"]+)"', page_html)
-        if not m:
-            m = re.search(r'csrf_token.*?value="([^"]+)"', page_html, re.DOTALL)
-        csrf = m.group(1) if m else self._csrf_token
-
-        def _field(name: str) -> str:
-            """Scrape a single input field value from the admin edit page."""
-            fm = re.search(rf'name="{re.escape(name)}"[^>]*value="([^"]*)"', page_html)
-            if fm:
-                return _html.unescape(fm.group(1))
-            fm = re.search(rf'value="([^"]*)"[^>]*name="{re.escape(name)}"', page_html)
-            return _html.unescape(fm.group(1)) if fm else ""
-
-        def _textarea(name: str) -> str:
-            """Scrape a textarea value from the admin edit page."""
-            fm = re.search(
-                rf'<textarea[^>]*name="{re.escape(name)}"[^>]*>(.*?)</textarea>',
-                page_html, re.DOTALL,
-            )
-            return _html.unescape(fm.group(1)) if fm else ""
+        csrf, fields = self._parse_admin_page(page_html)
 
         form: dict[str, str] = {
             "book_id": str(book_id),
             "csrf_token": csrf,
-            "title": correct_title if correct_title is not None else _field("title"),
-            "authors": correct_author,
-            "tags": _field("tags"),
-            "series": _field("series"),
-            "series_index": _field("series_index"),
-            "pubdate": _field("pubdate"),
-            "publisher": _field("publisher"),
-            "languages": _field("languages"),
-            "rating": _field("rating"),
-            "comments": _textarea("comments"),
-            "cover_url": _field("cover_url"),
+            **fields,
+            **updates,
         }
 
         # Preserve all book identifiers (amazon, goodreads, isbn, hardcover-id, etc.)
@@ -503,13 +488,61 @@ class CWAClient:
             headers={"X-CSRFToken": csrf, "X-Requested-With": "XMLHttpRequest"},
         )
         if post_resp.ok:
-            log.debug("CWA: book %d author updated to %r", book_id, correct_author)
+            log.debug("CWA: book %d metadata updated: %s", book_id, list(updates.keys()))
             return True
         log.warning(
-            "CWA: failed to update author for book %d: HTTP %d",
+            "CWA: failed to update metadata for book %d: HTTP %d",
             book_id, post_resp.status_code,
         )
         return False
+
+    def update_book_author(
+        self,
+        book_id: int,
+        correct_author: str,
+        correct_title: str | None = None,
+    ) -> bool:
+        """Update the author (and optionally title) of a book. Delegates to update_book_metadata."""
+        updates: dict[str, str] = {"authors": correct_author}
+        if correct_title is not None:
+            updates["title"] = correct_title
+        return self.update_book_metadata(book_id, updates)
+
+    def _parse_admin_page(self, page_html: str) -> tuple[str, dict[str, str]]:
+        """Parse a CWA admin book-edit page, returning (csrf_token, {field: value})."""
+        m = re.search(r'name="csrf_token"[^>]+value="([^"]+)"', page_html)
+        if not m:
+            m = re.search(r'csrf_token.*?value="([^"]+)"', page_html, re.DOTALL)
+        csrf = m.group(1) if m else self._csrf_token
+
+        def _field(name: str) -> str:
+            fm = re.search(rf'name="{re.escape(name)}"[^>]*value="([^"]*)"', page_html)
+            if fm:
+                return _html.unescape(fm.group(1))
+            fm = re.search(rf'value="([^"]*)"[^>]*name="{re.escape(name)}"', page_html)
+            return _html.unescape(fm.group(1)) if fm else ""
+
+        def _textarea(name: str) -> str:
+            fm = re.search(
+                rf'<textarea[^>]*name="{re.escape(name)}"[^>]*>(.*?)</textarea>',
+                page_html, re.DOTALL,
+            )
+            return _html.unescape(fm.group(1)) if fm else ""
+
+        fields = {
+            "title": _field("title"),
+            "authors": _field("authors"),
+            "tags": _field("tags"),
+            "series": _field("series"),
+            "series_index": _field("series_index"),
+            "pubdate": _field("pubdate"),
+            "publisher": _field("publisher"),
+            "languages": _field("languages"),
+            "rating": _field("rating"),
+            "comments": _textarea("comments"),
+            "cover_url": _field("cover_url"),
+        }
+        return csrf, fields
 
     def _login(self) -> None:
         """Login to CWA via the web form, storing the session cookie."""

@@ -20,6 +20,8 @@ _WANT_TO_READ_QUERY = """
       book {
         id
         title
+        description
+        release_date
         contributions {
           author {
             name
@@ -28,6 +30,15 @@ _WANT_TO_READ_QUERY = """
         default_physical_edition {
           isbn_10
           isbn_13
+          publisher {
+            name
+          }
+        }
+        book_series {
+          series {
+            name
+          }
+          position
         }
       }
     }
@@ -43,6 +54,8 @@ _READ_QUERY = """
       book {
         id
         title
+        description
+        release_date
         contributions {
           author {
             name
@@ -51,6 +64,15 @@ _READ_QUERY = """
         default_physical_edition {
           isbn_10
           isbn_13
+          publisher {
+            name
+          }
+        }
+        book_series {
+          series {
+            name
+          }
+          position
         }
       }
     }
@@ -156,6 +178,30 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
             edition = book_data.get("default_physical_edition") or {}
             isbn_10 = (edition.get("isbn_10") or "").strip() or None
             isbn_13 = (edition.get("isbn_13") or "").strip() or None
+            publisher_obj = edition.get("publisher") or {}
+            publisher = (publisher_obj.get("name") or "").strip() or None
+
+            raw_desc = book_data.get("description") or ""
+            description = raw_desc.strip() or None
+
+            pubdate = (book_data.get("release_date") or "").strip() or None
+
+            series: str | None = None
+            series_index: str | None = None
+            book_series_list = book_data.get("book_series") or []
+            if book_series_list:
+                first = book_series_list[0]
+                series_name = ((first.get("series") or {}).get("name") or "").strip()
+                series = series_name or None
+                pos = first.get("position")
+                if pos is not None:
+                    try:
+                        float_pos = float(pos)
+                        series_index = (
+                            str(int(float_pos)) if float_pos == int(float_pos) else str(float_pos)
+                        )
+                    except (ValueError, TypeError):
+                        series_index = str(pos)
 
             books.append(Book(
                 title=title,
@@ -164,6 +210,11 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
                 isbn_13=isbn_13,
                 source="hardcover",
                 source_id=str(book_data.get("id", "")),
+                description=description,
+                series=series,
+                series_index=series_index,
+                publisher=publisher,
+                pubdate=pubdate,
             ))
         except (KeyError, TypeError) as exc:
             log.warning("Skipping malformed Hardcover entry: %s", exc)
@@ -243,6 +294,30 @@ def fetch_read(api_key: str) -> list[Book]:
             edition = book_data.get("default_physical_edition") or {}
             isbn_10 = (edition.get("isbn_10") or "").strip() or None
             isbn_13 = (edition.get("isbn_13") or "").strip() or None
+            publisher_obj = edition.get("publisher") or {}
+            publisher = (publisher_obj.get("name") or "").strip() or None
+
+            raw_desc = book_data.get("description") or ""
+            description = raw_desc.strip() or None
+
+            pubdate = (book_data.get("release_date") or "").strip() or None
+
+            series: str | None = None
+            series_index: str | None = None
+            book_series_list = book_data.get("book_series") or []
+            if book_series_list:
+                first = book_series_list[0]
+                series_name = ((first.get("series") or {}).get("name") or "").strip()
+                series = series_name or None
+                pos = first.get("position")
+                if pos is not None:
+                    try:
+                        float_pos = float(pos)
+                        series_index = (
+                            str(int(float_pos)) if float_pos == int(float_pos) else str(float_pos)
+                        )
+                    except (ValueError, TypeError):
+                        series_index = str(pos)
 
             books.append(Book(
                 title=title,
@@ -251,6 +326,11 @@ def fetch_read(api_key: str) -> list[Book]:
                 isbn_13=isbn_13,
                 source="hardcover",
                 source_id=str(book_data.get("id", "")),
+                description=description,
+                series=series,
+                series_index=series_index,
+                publisher=publisher,
+                pubdate=pubdate,
             ))
         except (KeyError, TypeError) as exc:
             log.warning("Skipping malformed Hardcover entry: %s", exc)

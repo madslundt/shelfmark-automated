@@ -49,3 +49,37 @@ def test_book_normalized_key_strips_accents():
 def test_book_normalized_key_strips_punctuation():
     book = Book("It's: A Book", "Author")
     assert book.normalized_key() == "its a book author"
+
+
+def test_book_description_defaults_none():
+    book = Book("Title", "Author")
+    assert book.description is None
+
+
+def test_book_description_can_be_set():
+    book = Book("Title", "Author", description="A great book about things.")
+    assert book.description == "A great book about things."
+
+
+def test_book_series_fields_default_none():
+    book = Book("Title", "Author")
+    assert book.series is None
+    assert book.series_index is None
+
+
+def test_book_series_can_be_set():
+    book = Book("Title", "Author", series="My Series", series_index="2")
+    assert book.series == "My Series"
+    assert book.series_index == "2"
+
+
+def test_book_publisher_pubdate_default_none():
+    book = Book("Title", "Author")
+    assert book.publisher is None
+    assert book.pubdate is None
+
+
+def test_book_publisher_pubdate_can_be_set():
+    book = Book("Title", "Author", publisher="Penguin", pubdate="2023-06-01")
+    assert book.publisher == "Penguin"
+    assert book.pubdate == "2023-06-01"

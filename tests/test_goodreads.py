@@ -174,3 +174,70 @@ def test_fetch_read_returns_books():
     assert len(books) == 1
     assert books[0].title == "The Martian"
     assert books[0].source == "goodreads"
+
+
+# ---------------------------------------------------------------------------
+# Description from RSS summary
+# ---------------------------------------------------------------------------
+
+def _make_entry_with_summary(title, author_name, summary="", isbn="", book_id=""):
+    entry = MagicMock()
+    entry.title = title
+    entry.author_name = author_name
+    entry.author = ""
+    entry.isbn = isbn
+    entry.book_id = book_id
+    entry.summary = summary
+    return entry
+
+
+def test_fetch_want_to_read_parses_description_from_summary():
+    mock_resp = MagicMock()
+    mock_resp.text = "<rss/>"
+    mock_resp.raise_for_status = MagicMock()
+
+    entry = _make_entry_with_summary(
+        "Dark Matter", "Blake Crouch",
+        summary="A mind-bending thriller about parallel universes.",
+    )
+    mock_feed = _make_feed([entry])
+
+    with patch("requests.get", return_value=mock_resp), \
+         patch("src.goodreads.feedparser.parse", return_value=mock_feed):
+        books = fetch_want_to_read("https://www.goodreads.com/review/list_rss/123456")
+
+    assert books[0].description == "A mind-bending thriller about parallel universes."
+
+
+def test_fetch_want_to_read_description_none_when_no_summary():
+    mock_resp = MagicMock()
+    mock_resp.text = "<rss/>"
+    mock_resp.raise_for_status = MagicMock()
+
+    entry = _make_entry("Dark Matter", "Blake Crouch")
+    # _make_entry does not set summary attr → getattr returns ""
+    mock_feed = _make_feed([entry])
+
+    with patch("requests.get", return_value=mock_resp), \
+         patch("src.goodreads.feedparser.parse", return_value=mock_feed):
+        books = fetch_want_to_read("https://www.goodreads.com/review/list_rss/123456")
+
+    assert books[0].description is None
+
+
+def test_fetch_read_parses_description_from_summary():
+    mock_resp = MagicMock()
+    mock_resp.text = "<rss/>"
+    mock_resp.raise_for_status = MagicMock()
+
+    entry = _make_entry_with_summary(
+        "The Martian", "Andy Weir",
+        summary="An astronaut is stranded on Mars.",
+    )
+    mock_feed = _make_feed([entry])
+
+    with patch("src.goodreads.requests.get", return_value=mock_resp), \
+         patch("src.goodreads.feedparser.parse", return_value=mock_feed):
+        books = fetch_read("https://www.goodreads.com/review/list_rss/12345")
+
+    assert books[0].description == "An astronaut is stranded on Mars."

@@ -27,8 +27,13 @@ class Book:
     author: str
     isbn_10: str | None = None
     isbn_13: str | None = None
-    source: str = ""       # "hardcover" | "goodreads"
-    source_id: str = ""    # Hardcover book ID or Goodreads book_id
+    source: str = ""            # "hardcover" | "goodreads"
+    source_id: str = ""         # Hardcover book ID or Goodreads book_id
+    description: str | None = None
+    series: str | None = None
+    series_index: str | None = None
+    publisher: str | None = None
+    pubdate: str | None = None
 
     def best_isbn(self) -> str | None:
         """Return isbn_13 if available, then isbn_10, then None."""

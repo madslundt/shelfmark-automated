@@ -173,3 +173,112 @@ def test_fetch_read_empty_returns_empty_list():
         books = fetch_read("key")
 
     assert books == []
+
+
+# ---------------------------------------------------------------------------
+# New metadata fields: description, series, publisher, pubdate
+# ---------------------------------------------------------------------------
+
+def _full_book_payload(*, title, author, description=None, release_date=None,
+                        isbn_10=None, isbn_13=None, publisher_name=None,
+                        series_name=None, series_position=None, book_id=1):
+    """Build a Hardcover GraphQL response for a single book with all new fields."""
+    edition = {"isbn_10": isbn_10, "isbn_13": isbn_13}
+    if publisher_name is not None:
+        edition["publisher"] = {"name": publisher_name}
+    else:
+        edition["publisher"] = None
+
+    book_series = []
+    if series_name is not None:
+        book_series = [{"series": {"name": series_name}, "position": series_position}]
+
+    return {"data": {"me": [{"user_books": [{
+        "book": {
+            "id": book_id,
+            "title": title,
+            "description": description,
+            "release_date": release_date,
+            "contributions": [{"author": {"name": author}}],
+            "default_physical_edition": edition,
+            "book_series": book_series,
+        }
+    }]}]}}
+
+
+def test_fetch_want_to_read_populates_description():
+    data = _full_book_payload(
+        title="Dark Matter", author="Blake Crouch",
+        description="A physicist is kidnapped into a parallel universe.",
+    )
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_want_to_read("key")
+    assert books[0].description == "A physicist is kidnapped into a parallel universe."
+
+
+def test_fetch_want_to_read_populates_pubdate():
+    data = _full_book_payload(
+        title="Dark Matter", author="Blake Crouch", release_date="2016-07-26",
+    )
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_want_to_read("key")
+    assert books[0].pubdate == "2016-07-26"
+
+
+def test_fetch_want_to_read_populates_series():
+    data = _full_book_payload(
+        title="The Name of the Wind", author="Patrick Rothfuss",
+        series_name="The Kingkiller Chronicle", series_position=1,
+    )
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_want_to_read("key")
+    assert books[0].series == "The Kingkiller Chronicle"
+    assert books[0].series_index == "1"
+
+
+def test_fetch_want_to_read_populates_publisher():
+    data = _full_book_payload(
+        title="Project Hail Mary", author="Andy Weir", publisher_name="Ballantine Books",
+    )
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_want_to_read("key")
+    assert books[0].publisher == "Ballantine Books"
+
+
+def test_fetch_want_to_read_null_description_and_series_give_none():
+    data = _full_book_payload(title="Some Book", author="Some Author")
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_want_to_read("key")
+    assert books[0].description is None
+    assert books[0].series is None
+    assert books[0].series_index is None
+    assert books[0].publisher is None
+    assert books[0].pubdate is None
+
+
+def test_fetch_read_populates_description():
+    data = _full_book_payload(
+        title="The Martian", author="Andy Weir",
+        description="An astronaut is stranded on Mars.",
+    )
+    mock_resp = _mock_session_post(data)
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_read("key")
+    assert books[0].description == "An astronaut is stranded on Mars."

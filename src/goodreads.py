@@ -110,6 +110,9 @@ def fetch_want_to_read(rss_url: str) -> list[Book]:
 
             source_id = str(getattr(entry, "book_id", "") or "").strip()
 
+            raw_summary = getattr(entry, "summary", "")
+            description = raw_summary.strip() or None if isinstance(raw_summary, str) else None
+
             books.append(Book(
                 title=title,
                 author=author,
@@ -117,6 +120,7 @@ def fetch_want_to_read(rss_url: str) -> list[Book]:
                 isbn_13=None,  # Goodreads RSS does not provide ISBN-13
                 source="goodreads",
                 source_id=source_id,
+                description=description,
             ))
         except Exception as exc:  # noqa: BLE001
             log.warning("Skipping malformed Goodreads entry: %s", exc)
@@ -171,6 +175,9 @@ def fetch_read(rss_url: str) -> list[Book]:
             isbn_10 = raw_isbn if raw_isbn else None
             source_id = str(getattr(entry, "book_id", "") or "").strip()
 
+            raw_summary = getattr(entry, "summary", "")
+            description = raw_summary.strip() or None if isinstance(raw_summary, str) else None
+
             books.append(Book(
                 title=title,
                 author=author,
@@ -178,6 +185,7 @@ def fetch_read(rss_url: str) -> list[Book]:
                 isbn_13=None,
                 source="goodreads",
                 source_id=source_id,
+                description=description,
             ))
         except Exception as exc:  # noqa: BLE001
             log.warning("Skipping malformed Goodreads entry: %s", exc)

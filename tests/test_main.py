@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from main import (
     Config,
+    _build_metadata_updates,
     _is_read_status_sync_due,
     deduplicate,
     sync_metadata_once,
@@ -474,6 +475,12 @@ def test_config_fix_metadata_disabled_by_zero():
 # sync_metadata_once
 # ---------------------------------------------------------------------------
 
+_EMPTY_CWA_META = {
+    "title": "A Book", "authors": "blake crouch", "series": "", "series_index": "1",
+    "comments": "", "publisher": "", "pubdate": "", "tags": "", "languages": "", "rating": "0",
+}
+
+
 def test_sync_metadata_once_skips_when_cwa_not_configured():
     config = _make_config(cwa_url=None, fix_metadata=True)
     sync_metadata_once(config, None)  # must not raise
@@ -482,22 +489,26 @@ def test_sync_metadata_once_skips_when_cwa_not_configured():
 def test_sync_metadata_once_skips_when_disabled():
     config = _make_config(fix_metadata=False)
     client = MagicMock()
-    with patch("main.cwa.find_mismatched_author") as mock_find:
+    with patch("main.cwa.find_book_in_library") as mock_find:
         sync_metadata_once(config, client)
     mock_find.assert_not_called()
 
 
-def test_sync_metadata_once_calls_update_for_mismatch():
+def test_sync_metadata_once_calls_update_for_author_mismatch():
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()
     book = Book("All The Lies", "Nicola Sanders")
 
+    cwa_meta = {**_EMPTY_CWA_META, "authors": "jennifer harvey", "title": "All The Lies"}
+    client.get_book_metadata.return_value = cwa_meta
+    client.update_book_metadata.return_value = True
+
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
-         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")):
+         patch("main.cwa.find_book_in_library", return_value=42):
         sync_metadata_once(config, client)
 
-    client.update_book_author.assert_called_once_with(42, "Nicola Sanders")
+    client.update_book_metadata.assert_called_once_with(42, {"authors": "Nicola Sanders"})
 
 
 def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():
@@ -509,39 +520,54 @@ def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():
     """
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()
-    # Our list has two books: "The Housemaid" by Freida McFadden, and "Winning Without Losing"
-    # by some other author. CWA has "Winning Without Losing" stored with author "freida mcfadden"
-    # (because it's actually The Housemaid under a wrong title).
     book_housemaid = Book("The Housemaid", "Freida McFadden")
     book_winning = Book("Winning Without Losing", "Martin Bjergegaard")
 
-    # find_mismatched_author returns a mismatch for "Winning Without Losing":
-    # CWA has it by "freida mcfadden" but our list says "Martin Bjergegaard"
-    def fake_find(book, *args, **kwargs):
+    def fake_find_lib(book, *args, **kwargs):
         if book.title == "Winning Without Losing":
-            return (99, "freida mcfadden")
+            return 99
         return None
+
+    meta = {**_EMPTY_CWA_META, "authors": "freida mcfadden", "title": "Winning Without Losing"}
+    client.get_book_metadata.return_value = meta
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book_housemaid, book_winning]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
-         patch("main.cwa.find_mismatched_author", side_effect=fake_find):
+         patch("main.cwa.find_book_in_library", side_effect=fake_find_lib):
         sync_metadata_once(config, client)
 
-    # update_book_author must NOT be called — "freida mcfadden" is a known correct author
-    client.update_book_author.assert_not_called()
+    # Author update skipped (freida mcfadden is a known correct author), no other fields differ
+    client.update_book_metadata.assert_not_called()
 
 
-def test_sync_metadata_once_skips_no_mismatch():
+def test_sync_metadata_once_skips_when_book_not_in_library():
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()
     book = Book("Dark Matter", "Blake Crouch")
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
-         patch("main.cwa.find_mismatched_author", return_value=None):
+         patch("main.cwa.find_book_in_library", return_value=None):
         sync_metadata_once(config, client)
 
-    client.update_book_author.assert_not_called()
+    client.update_book_metadata.assert_not_called()
+
+
+def test_sync_metadata_once_fills_empty_description():
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("Dark Matter", "Blake Crouch", description="A mind-bending thriller.")
+
+    cwa_meta = {**_EMPTY_CWA_META, "title": "Dark Matter"}
+    client.get_book_metadata.return_value = cwa_meta
+    client.update_book_metadata.return_value = True
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.cwa.find_book_in_library", return_value=7):
+        sync_metadata_once(config, client)
+
+    client.update_book_metadata.assert_called_once_with(7, {"comments": "A mind-bending thriller."})
 
 
 def test_sync_metadata_once_retries_failed_updates():
@@ -549,16 +575,18 @@ def test_sync_metadata_once_retries_failed_updates():
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()
     book = Book("All The Lies", "Nicola Sanders")
-    # Fail twice, succeed on third attempt
-    client.update_book_author.side_effect = [False, False, True]
+
+    cwa_meta = {**_EMPTY_CWA_META, "authors": "jennifer harvey", "title": "All The Lies"}
+    client.get_book_metadata.return_value = cwa_meta
+    client.update_book_metadata.side_effect = [False, False, True]
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
-         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")), \
+         patch("main.cwa.find_book_in_library", return_value=42), \
          patch("main.time.sleep"):
         sync_metadata_once(config, client)
 
-    assert client.update_book_author.call_count == 3
+    assert client.update_book_metadata.call_count == 3
 
 
 def test_sync_metadata_once_gives_up_after_three_retries():
@@ -566,16 +594,89 @@ def test_sync_metadata_once_gives_up_after_three_retries():
     config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
     client = MagicMock()
     book = Book("All The Lies", "Nicola Sanders")
-    client.update_book_author.return_value = False  # always fails
+
+    cwa_meta = {**_EMPTY_CWA_META, "authors": "jennifer harvey", "title": "All The Lies"}
+    client.get_book_metadata.return_value = cwa_meta
+    client.update_book_metadata.return_value = False
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
-         patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")), \
+         patch("main.cwa.find_book_in_library", return_value=42), \
          patch("main.time.sleep"):
         sync_metadata_once(config, client)
 
     # 1 initial attempt + 3 retries = 4 total calls
-    assert client.update_book_author.call_count == 4
+    assert client.update_book_metadata.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# _build_metadata_updates
+# ---------------------------------------------------------------------------
+
+def test_build_metadata_updates_empty_when_nothing_to_change():
+    book = Book("A Book", "Blake Crouch")
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates == {}
+
+
+def test_build_metadata_updates_author_when_different():
+    meta = {**_EMPTY_CWA_META, "authors": "wrong author"}
+    book = Book("A Book", "Right Author")
+    updates = _build_metadata_updates(book, meta)
+    assert updates.get("authors") == "Right Author"
+
+
+def test_build_metadata_updates_fills_empty_description():
+    book = Book("A Book", "Blake Crouch", description="Great description.")
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("comments") == "Great description."
+
+
+def test_build_metadata_updates_skips_description_if_cwa_has_one():
+    meta = {**_EMPTY_CWA_META, "comments": "Existing CWA description."}
+    book = Book("A Book", "Blake Crouch", description="Different description.")
+    updates = _build_metadata_updates(book, meta)
+    assert "comments" not in updates
+
+
+def test_build_metadata_updates_fills_empty_series():
+    book = Book("A Book", "Blake Crouch", series="My Series", series_index="2")
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("series") == "My Series"
+    assert updates.get("series_index") == "2"
+
+
+def test_build_metadata_updates_skips_series_if_cwa_has_one():
+    meta = {**_EMPTY_CWA_META, "series": "Existing Series"}
+    book = Book("A Book", "Blake Crouch", series="New Series", series_index="1")
+    updates = _build_metadata_updates(book, meta)
+    assert "series" not in updates
+
+
+def test_build_metadata_updates_fills_empty_publisher():
+    book = Book("A Book", "Blake Crouch", publisher="Penguin")
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("publisher") == "Penguin"
+
+
+def test_build_metadata_updates_skips_publisher_if_cwa_has_one():
+    meta = {**_EMPTY_CWA_META, "publisher": "Existing Publisher"}
+    book = Book("A Book", "Blake Crouch", publisher="New Publisher")
+    updates = _build_metadata_updates(book, meta)
+    assert "publisher" not in updates
+
+
+def test_build_metadata_updates_fills_empty_pubdate():
+    book = Book("A Book", "Blake Crouch", pubdate="2023-01-01")
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("pubdate") == "2023-01-01"
+
+
+def test_build_metadata_updates_skips_pubdate_if_cwa_has_one():
+    meta = {**_EMPTY_CWA_META, "pubdate": "2020-05-01"}
+    book = Book("A Book", "Blake Crouch", pubdate="2023-01-01")
+    updates = _build_metadata_updates(book, meta)
+    assert "pubdate" not in updates
 
 
 # ---------------------------------------------------------------------------

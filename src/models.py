@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _normalize(text: str) -> str:
@@ -34,6 +34,9 @@ class Book:
     series_index: str | None = None
     publisher: str | None = None
     pubdate: str | None = None
+    tags: list[str] = field(default_factory=list)
+    community_rating: float | None = None
+    ratings_count: int | None = None
 
     def best_isbn(self) -> str | None:
         """Return isbn_13 if available, then isbn_10, then None."""

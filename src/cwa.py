@@ -438,7 +438,10 @@ class CWAClient:
         _, fields = self._parse_admin_page(resp.text)
         return fields
 
-    def update_book_metadata(self, book_id: int, updates: dict[str, str]) -> bool:
+    def update_book_metadata(
+        self, book_id: int, updates: dict[str, str],
+        new_identifiers: dict[str, str] | None = None,
+    ) -> bool:
         """Apply field updates to a book in CWA via the admin edit form.
 
         Fetches the current admin page for existing values and CSRF token, merges
@@ -477,10 +480,19 @@ class CWAClient:
         }
 
         # Preserve all book identifiers (amazon, goodreads, isbn, hardcover-id, etc.)
+        existing_id_count = 0
         for im in re.finditer(
             r'name="(identifier-(?:type|val)-\d+)"[^>]*value="([^"]*)"', page_html
         ):
             form[im.group(1)] = _html.unescape(im.group(2))
+            if im.group(1).startswith("identifier-type-"):
+                existing_id_count += 1
+
+        if new_identifiers:
+            for idx, (id_type, id_val) in enumerate(new_identifiers.items()):
+                n = existing_id_count + idx
+                form[f"identifier-type-{n}"] = id_type
+                form[f"identifier-val-{n}"] = id_val
 
         post_resp = self._session.post(
             edit_url,
@@ -529,6 +541,7 @@ class CWAClient:
             )
             return _html.unescape(fm.group(1)) if fm else ""
 
+        id_types = re.findall(r'name="identifier-type-\d+"[^>]*value="([^"]*)"', page_html)
         fields = {
             "title": _field("title"),
             "authors": _field("authors"),
@@ -541,6 +554,7 @@ class CWAClient:
             "rating": _field("rating"),
             "comments": _textarea("comments"),
             "cover_url": _field("cover_url"),
+            "identifier_types": ",".join(t for t in id_types if t),
         }
         return csrf, fields
 

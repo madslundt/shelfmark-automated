@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from main import (
     Config,
     _build_metadata_updates,
+    _build_new_identifiers,
     _is_read_status_sync_due,
     deduplicate,
     sync_metadata_once,
@@ -478,6 +479,7 @@ def test_config_fix_metadata_disabled_by_zero():
 _EMPTY_CWA_META = {
     "title": "A Book", "authors": "blake crouch", "series": "", "series_index": "1",
     "comments": "", "publisher": "", "pubdate": "", "tags": "", "languages": "", "rating": "0",
+    "identifier_types": "",
 }
 
 
@@ -677,6 +679,86 @@ def test_build_metadata_updates_skips_pubdate_if_cwa_has_one():
     book = Book("A Book", "Blake Crouch", pubdate="2023-01-01")
     updates = _build_metadata_updates(book, meta)
     assert "pubdate" not in updates
+
+
+def test_build_metadata_updates_fills_tags_when_empty():
+    book = Book("A Book", "Blake Crouch", tags=["Fiction", "Thriller"])
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("tags") == "Fiction, Thriller"
+
+
+def test_build_metadata_updates_skips_tags_if_cwa_has_some():
+    meta = {**_EMPTY_CWA_META, "tags": "Existing Tag"}
+    book = Book("A Book", "Blake Crouch", tags=["Fiction"])
+    updates = _build_metadata_updates(book, meta)
+    assert "tags" not in updates
+
+
+def test_build_metadata_updates_fills_rating_with_enough_reviews():
+    book = Book("A Book", "Blake Crouch", community_rating=4.0, ratings_count=100)
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert updates.get("rating") == "8"  # 4.0 * 2 = 8, Calibre scale 0-10
+
+
+def test_build_metadata_updates_skips_rating_when_too_few_reviews():
+    book = Book("A Book", "Blake Crouch", community_rating=4.0, ratings_count=5)
+    updates = _build_metadata_updates(book, _EMPTY_CWA_META)
+    assert "rating" not in updates
+
+
+def test_build_metadata_updates_skips_rating_if_cwa_has_one():
+    meta = {**_EMPTY_CWA_META, "rating": "6"}
+    book = Book("A Book", "Blake Crouch", community_rating=4.0, ratings_count=100)
+    updates = _build_metadata_updates(book, meta)
+    assert "rating" not in updates
+
+
+# ---------------------------------------------------------------------------
+# _build_new_identifiers
+# ---------------------------------------------------------------------------
+
+def test_build_new_identifiers_adds_isbn13_when_missing():
+    book = Book("A Book", "Author", isbn_13="9781234567890")
+    result = _build_new_identifiers(book, _EMPTY_CWA_META)
+    assert result.get("isbn") == "9781234567890"
+
+
+def test_build_new_identifiers_falls_back_to_isbn10():
+    book = Book("A Book", "Author", isbn_10="1234567890")
+    result = _build_new_identifiers(book, _EMPTY_CWA_META)
+    assert result.get("isbn") == "1234567890"
+
+
+def test_build_new_identifiers_skips_isbn_if_already_in_cwa():
+    book = Book("A Book", "Author", isbn_13="9781234567890")
+    meta = {**_EMPTY_CWA_META, "identifier_types": "isbn,goodreads"}
+    result = _build_new_identifiers(book, meta)
+    assert "isbn" not in result
+
+
+def test_build_new_identifiers_adds_goodreads_source_id():
+    book = Book("A Book", "Author", source="goodreads", source_id="12345")
+    result = _build_new_identifiers(book, _EMPTY_CWA_META)
+    assert result.get("goodreads") == "12345"
+
+
+def test_build_new_identifiers_adds_hardcover_source_id():
+    book = Book("A Book", "Author", source="hardcover", source_id="hc-99")
+    result = _build_new_identifiers(book, _EMPTY_CWA_META)
+    assert result.get("hardcover") == "hc-99"
+
+
+def test_build_new_identifiers_skips_source_id_if_already_in_cwa():
+    book = Book("A Book", "Author", source="goodreads", source_id="12345")
+    meta = {**_EMPTY_CWA_META, "identifier_types": "goodreads"}
+    result = _build_new_identifiers(book, meta)
+    assert "goodreads" not in result
+
+
+def test_build_new_identifiers_empty_when_no_identifiers():
+    book = Book("A Book", "Author")
+    result = _build_new_identifiers(book, _EMPTY_CWA_META)
+    assert result == {}
 
 
 # ---------------------------------------------------------------------------

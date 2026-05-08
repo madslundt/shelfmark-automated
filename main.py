@@ -412,6 +412,29 @@ def sync_read_status_once(
         state.save()
 
 
+_MIN_RATINGS = 10
+
+
+def _build_new_identifiers(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
+    """Return {type: value} pairs for identifiers the book has but CWA is missing."""
+    existing = {
+        t.strip().lower()
+        for t in cwa_meta.get("identifier_types", "").split(",")
+        if t.strip()
+    }
+    result: dict[str, str] = {}
+    if "isbn" not in existing:
+        if book.isbn_13:
+            result["isbn"] = book.isbn_13
+        elif book.isbn_10:
+            result["isbn"] = book.isbn_10
+    if book.source == "goodreads" and book.source_id and "goodreads" not in existing:
+        result["goodreads"] = book.source_id
+    elif book.source == "hardcover" and book.source_id and "hardcover" not in existing:
+        result["hardcover"] = book.source_id
+    return result
+
+
 def _build_metadata_updates(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
     """Compare source book metadata with current CWA values, return fields to update.
 
@@ -438,6 +461,16 @@ def _build_metadata_updates(book: Book, cwa_meta: dict[str, str]) -> dict[str, s
 
     if book.pubdate and not cwa_meta.get("pubdate", "").strip():
         updates["pubdate"] = book.pubdate
+
+    if book.tags and not cwa_meta.get("tags", "").strip():
+        updates["tags"] = ", ".join(book.tags)
+
+    if (
+        book.community_rating is not None
+        and (book.ratings_count or 0) >= _MIN_RATINGS
+        and not int(cwa_meta.get("rating", "0") or "0")
+    ):
+        updates["rating"] = str(round(book.community_rating * 2))
 
     return updates
 

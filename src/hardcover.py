@@ -40,6 +40,13 @@ _WANT_TO_READ_QUERY = """
           }
           position
         }
+        taggings {
+          tag {
+            tag
+          }
+        }
+        community_rating
+        ratings_count
       }
     }
   }
@@ -74,6 +81,13 @@ _READ_QUERY = """
           }
           position
         }
+        taggings {
+          tag {
+            tag
+          }
+        }
+        community_rating
+        ratings_count
       }
     }
   }
@@ -203,6 +217,17 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
                     except (ValueError, TypeError):
                         series_index = str(pos)
 
+            taggings = book_data.get("taggings") or []
+            tags = [
+                t["tag"]["tag"] for t in taggings
+                if (t.get("tag") or {}).get("tag")
+            ]
+
+            _cr = book_data.get("community_rating")
+            community_rating = float(_cr) if _cr is not None else None
+            _rc = book_data.get("ratings_count")
+            ratings_count = int(_rc) if _rc is not None else None
+
             books.append(Book(
                 title=title,
                 author=author,
@@ -215,6 +240,9 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
                 series_index=series_index,
                 publisher=publisher,
                 pubdate=pubdate,
+                tags=tags,
+                community_rating=community_rating,
+                ratings_count=ratings_count,
             ))
         except (KeyError, TypeError) as exc:
             log.warning("Skipping malformed Hardcover entry: %s", exc)
@@ -319,6 +347,17 @@ def fetch_read(api_key: str) -> list[Book]:
                     except (ValueError, TypeError):
                         series_index = str(pos)
 
+            taggings = book_data.get("taggings") or []
+            tags = [
+                t["tag"]["tag"] for t in taggings
+                if (t.get("tag") or {}).get("tag")
+            ]
+
+            _cr = book_data.get("community_rating")
+            community_rating = float(_cr) if _cr is not None else None
+            _rc = book_data.get("ratings_count")
+            ratings_count = int(_rc) if _rc is not None else None
+
             books.append(Book(
                 title=title,
                 author=author,
@@ -331,6 +370,9 @@ def fetch_read(api_key: str) -> list[Book]:
                 series_index=series_index,
                 publisher=publisher,
                 pubdate=pubdate,
+                tags=tags,
+                community_rating=community_rating,
+                ratings_count=ratings_count,
             ))
         except (KeyError, TypeError) as exc:
             log.warning("Skipping malformed Hardcover entry: %s", exc)

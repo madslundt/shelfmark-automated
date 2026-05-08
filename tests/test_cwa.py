@@ -599,3 +599,65 @@ def test_update_book_metadata_raises_without_credentials():
     client = CWAClient("http://cwa:8083", None, None)
     with pytest.raises(CWAAuthError):
         client.update_book_metadata(42, {"authors": "Someone"})
+
+
+# ---------------------------------------------------------------------------
+# Identifier support: get_book_metadata returns identifier_types,
+# update_book_metadata accepts new_identifiers
+# ---------------------------------------------------------------------------
+
+_EDIT_PAGE_HTML_WITH_IDS = """\
+<input type="hidden" name="csrf_token" value="test-csrf-token">
+<input type="hidden" name="book_id" value="42">
+<input type="text" name="title" value="Dark Matter">
+<input type="text" name="authors" value="Blake Crouch">
+<input type="text" name="tags" value="">
+<input type="text" name="series" value="">
+<input type="number" name="series_index" value="1">
+<input type="text" name="pubdate" value="">
+<input type="text" name="publisher" value="">
+<input type="text" name="languages" value="">
+<input type="number" name="rating" value="0"/>
+<textarea name="comments" rows="7"></textarea>
+<input type="text" name="cover_url" value="">
+<input type="text" name="identifier-type-0" value="isbn">
+<input type="text" name="identifier-val-0" value="9780553418811">
+<input type="text" name="identifier-type-1" value="goodreads">
+<input type="text" name="identifier-val-1" value="22055262">
+"""
+
+
+def test_get_book_metadata_returns_identifier_types():
+    """get_book_metadata returns 'identifier_types' with comma-separated existing types."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+
+    mock_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML_WITH_IDS)
+    with patch.object(client._session, "get", return_value=mock_get):
+        meta = client.get_book_metadata(42)
+
+    assert meta is not None
+    types = {t.strip() for t in meta["identifier_types"].split(",") if t.strip()}
+    assert "isbn" in types
+    assert "goodreads" in types
+
+
+def test_update_book_metadata_adds_new_identifiers():
+    """new_identifiers are appended as additional identifier-type/val form fields."""
+    client = CWAClient("http://cwa:8083", "user", "pass")
+    client._authenticated = True
+    client._csrf_token = "test-csrf-token"
+
+    mock_get = MagicMock(ok=True, text=_EDIT_PAGE_HTML_WITH_IDS)
+    mock_post_resp = MagicMock(ok=True, status_code=200)
+
+    with patch.object(client._session, "get", return_value=mock_get), \
+         patch.object(client._session, "post", return_value=mock_post_resp) as mock_post_call:
+        result = client.update_book_metadata(42, {}, new_identifiers={"hardcover": "hc-99"})
+
+    assert result is True
+    posted = mock_post_call.call_args[1]["data"]
+    assert posted["identifier-type-0"] == "isbn"
+    assert posted["identifier-val-0"] == "9780553418811"
+    id_values = [posted.get(f"identifier-val-{i}") for i in range(5)]
+    assert "hc-99" in id_values

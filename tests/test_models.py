@@ -83,3 +83,24 @@ def test_book_publisher_pubdate_can_be_set():
     book = Book("Title", "Author", publisher="Penguin", pubdate="2023-06-01")
     assert book.publisher == "Penguin"
     assert book.pubdate == "2023-06-01"
+
+
+def test_book_tags_default_empty():
+    book = Book("Title", "Author")
+    assert book.tags == []
+
+
+def test_book_tags_can_be_set():
+    book = Book("Title", "Author", tags=["Fiction", "Thriller"])
+    assert book.tags == ["Fiction", "Thriller"]
+
+
+def test_book_community_rating_defaults_none():
+    book = Book("Title", "Author")
+    assert book.community_rating is None
+
+
+def test_book_community_rating_can_be_set():
+    book = Book("Title", "Author", community_rating=4.1, ratings_count=250)
+    assert book.community_rating == 4.1
+    assert book.ratings_count == 250

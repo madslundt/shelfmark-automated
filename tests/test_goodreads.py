@@ -3,7 +3,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.goodreads import _ensure_to_read_shelf, _force_shelf, fetch_read, fetch_want_to_read
+from src.goodreads import (
+    _ensure_to_read_shelf,
+    _force_shelf,
+    fetch_currently_reading,
+    fetch_read,
+    fetch_want_to_read,
+)
 
 
 def test_ensure_to_read_shelf_appends():
@@ -223,6 +229,43 @@ def test_fetch_want_to_read_description_none_when_no_summary():
         books = fetch_want_to_read("https://www.goodreads.com/review/list_rss/123456")
 
     assert books[0].description is None
+
+
+def test_fetch_currently_reading_uses_shelf_currently_reading():
+    """fetch_currently_reading() must request shelf=currently-reading."""
+    captured = {}
+
+    def _capture_get(url, timeout=None, headers=None):
+        captured["url"] = url
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = """<?xml version="1.0"?>
+<rss version="2.0"><channel></channel></rss>"""
+        return mock_resp
+
+    with patch("src.goodreads.requests.get", side_effect=_capture_get):
+        fetch_currently_reading("https://www.goodreads.com/review/list_rss/12345")
+
+    assert "shelf=currently-reading" in captured["url"]
+    assert "to-read" not in captured["url"]
+    assert captured["url"].count("shelf=") == 1
+
+
+def test_fetch_currently_reading_returns_books():
+    mock_resp = MagicMock()
+    mock_resp.text = "<rss/>"
+    mock_resp.raise_for_status = MagicMock()
+
+    entry = _make_entry_with_summary("Dune", "Frank Herbert", isbn="0441013597", book_id="44767458")
+    mock_feed = _make_feed([entry])
+
+    with patch("src.goodreads.requests.get", return_value=mock_resp), \
+         patch("src.goodreads.feedparser.parse", return_value=mock_feed):
+        books = fetch_currently_reading("https://www.goodreads.com/review/list_rss/12345")
+
+    assert len(books) == 1
+    assert books[0].title == "Dune"
+    assert books[0].source == "goodreads"
 
 
 def test_fetch_read_parses_description_from_summary():

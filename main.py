@@ -501,6 +501,7 @@ def sync_metadata_once(
     if config.hardcover_api_key:
         try:
             all_books += hardcover.fetch_want_to_read(config.hardcover_api_key)
+            all_books += hardcover.fetch_currently_reading(config.hardcover_api_key)
             all_books += hardcover.fetch_read(config.hardcover_api_key)
         except Exception as exc:  # noqa: BLE001
             log.error("Metadata fix: Hardcover fetch failed — %s", exc)
@@ -510,6 +511,7 @@ def sync_metadata_once(
     if config.goodreads_rss_url:
         try:
             all_books += goodreads.fetch_want_to_read(config.goodreads_rss_url)
+            all_books += goodreads.fetch_currently_reading(config.goodreads_rss_url)
             all_books += goodreads.fetch_read(config.goodreads_rss_url)
         except Exception as exc:  # noqa: BLE001
             log.error("Metadata fix: Goodreads fetch failed — %s", exc)

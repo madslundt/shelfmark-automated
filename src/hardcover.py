@@ -248,6 +248,171 @@ def fetch_want_to_read(api_key: str) -> list[Book]:
     return books
 
 
+_CURRENTLY_READING_QUERY = """
+{
+  me {
+    user_books(where: {status_id: {_eq: 2}}) {
+      book {
+        id
+        title
+        description
+        release_date
+        contributions {
+          author {
+            name
+          }
+        }
+        default_physical_edition {
+          isbn_10
+          isbn_13
+          publisher {
+            name
+          }
+        }
+        book_series {
+          series {
+            name
+          }
+          position
+        }
+        taggings {
+          tag {
+            tag
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def fetch_currently_reading(api_key: str) -> list[Book]:
+    """Fetch currently-reading books (status_id=2) from Hardcover.
+
+    Args:
+        api_key: Hardcover Bearer token.
+
+    Returns:
+        List of Book objects with source="hardcover".
+
+    Raises:
+        requests.HTTPError: On HTTP 401 or unrecoverable errors.
+        requests.ConnectionError / requests.Timeout: After all retries exhausted.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": api_key if api_key.startswith("Bearer ") else f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    })
+
+    def _do_request():
+        resp = session.post(
+            HARDCOVER_GRAPHQL_URL,
+            json={"query": _CURRENTLY_READING_QUERY},
+            timeout=30,
+        )
+        if resp.status_code == 401:
+            raise requests.HTTPError(
+                "Hardcover API key is invalid or expired (HTTP 401)",
+                response=resp,
+            )
+        resp.raise_for_status()
+        return resp
+
+    resp = _with_retry(_do_request)
+    data = resp.json()
+
+    if "errors" in data:
+        for err in data["errors"]:
+            log.warning("Hardcover GraphQL error: %s", err.get("message", err))
+
+    books: list[Book] = []
+    try:
+        me_list = data["data"]["me"]
+        if not me_list:
+            return []
+        user_books = me_list[0]["user_books"]
+    except (KeyError, TypeError, IndexError) as exc:
+        log.error("Unexpected Hardcover response structure: %s", exc)
+        return []
+
+    for ub in user_books:
+        try:
+            book_data = ub["book"]
+            title = (book_data.get("title") or "").strip()
+            if not title:
+                continue
+
+            contributions = book_data.get("contributions") or []
+            author = ""
+            if contributions:
+                author = (contributions[0].get("author") or {}).get("name", "") or ""
+            author = author.strip()
+
+            edition = book_data.get("default_physical_edition") or {}
+            isbn_10 = (edition.get("isbn_10") or "").strip() or None
+            isbn_13 = (edition.get("isbn_13") or "").strip() or None
+            publisher_obj = edition.get("publisher") or {}
+            publisher = (publisher_obj.get("name") or "").strip() or None
+
+            raw_desc = book_data.get("description") or ""
+            description = raw_desc.strip() or None
+
+            pubdate = (book_data.get("release_date") or "").strip() or None
+
+            series: str | None = None
+            series_index: str | None = None
+            book_series_list = book_data.get("book_series") or []
+            if book_series_list:
+                first = book_series_list[0]
+                series_name = ((first.get("series") or {}).get("name") or "").strip()
+                series = series_name or None
+                pos = first.get("position")
+                if pos is not None:
+                    try:
+                        float_pos = float(pos)
+                        series_index = (
+                            str(int(float_pos)) if float_pos == int(float_pos) else str(float_pos)
+                        )
+                    except (ValueError, TypeError):
+                        series_index = str(pos)
+
+            taggings = book_data.get("taggings") or []
+            tags = [
+                t["tag"]["tag"] for t in taggings
+                if (t.get("tag") or {}).get("tag")
+            ]
+
+            _cr = book_data.get("community_rating")
+            community_rating = float(_cr) if _cr is not None else None
+            _rc = book_data.get("ratings_count")
+            ratings_count = int(_rc) if _rc is not None else None
+
+            books.append(Book(
+                title=title,
+                author=author,
+                isbn_10=isbn_10,
+                isbn_13=isbn_13,
+                source="hardcover",
+                source_id=str(book_data.get("id", "")),
+                description=description,
+                series=series,
+                series_index=series_index,
+                publisher=publisher,
+                pubdate=pubdate,
+                tags=tags,
+                community_rating=community_rating,
+                ratings_count=ratings_count,
+            ))
+        except (KeyError, TypeError) as exc:
+            log.warning("Skipping malformed Hardcover entry: %s", exc)
+            continue
+
+    log.info("Hardcover: fetched %d currently-reading books", len(books))
+    return books
+
+
 def fetch_read(api_key: str) -> list[Book]:
     """Fetch fully-read books (status_id=3) from Hardcover.
 

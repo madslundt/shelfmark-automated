@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.hardcover import fetch_read, fetch_want_to_read
+from src.hardcover import fetch_currently_reading, fetch_read, fetch_want_to_read
 
 
 def _mock_session_post(json_data, status_code=200):
@@ -275,6 +275,45 @@ def test_fetch_want_to_read_null_description_and_series_give_none():
     assert books[0].series_index is None
     assert books[0].publisher is None
     assert books[0].pubdate is None
+
+
+def test_fetch_currently_reading_uses_status_id_2():
+    """Verify the GraphQL query targets status_id=2 (Currently Reading)."""
+    captured = {}
+
+    def _capture_post(url, json=None, timeout=None):
+        captured["query"] = json.get("query", "")
+        mock_resp = _mock_session_post({"data": {"me": [{"user_books": []}]}})
+        mock_resp.raise_for_status = MagicMock()
+        return mock_resp
+
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.side_effect = _capture_post
+        mock_session_cls.return_value.headers = MagicMock()
+        fetch_currently_reading("key")
+
+    assert "_eq: 2" in captured["query"]
+    assert "_eq: 1" not in captured["query"]
+    assert "_eq: 3" not in captured["query"]
+
+
+def test_fetch_currently_reading_returns_books():
+    data = _want_to_read_payload({
+        "id": 5,
+        "title": "Dune",
+        "author": "Frank Herbert",
+        "edition": {"isbn_10": "0441013597", "isbn_13": None},
+    })
+    mock_resp = _mock_session_post(data)
+
+    with patch("src.hardcover.requests.Session") as mock_session_cls:
+        mock_session_cls.return_value.post.return_value = mock_resp
+        mock_session_cls.return_value.headers = MagicMock()
+        books = fetch_currently_reading("key")
+
+    assert len(books) == 1
+    assert books[0].title == "Dune"
+    assert books[0].source == "hardcover"
 
 
 def test_fetch_read_populates_description():

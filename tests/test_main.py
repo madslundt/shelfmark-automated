@@ -507,6 +507,7 @@ def test_sync_metadata_once_calls_update_for_author_mismatch():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", return_value=42):
         sync_metadata_once(config, client)
 
@@ -535,6 +536,7 @@ def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book_housemaid, book_winning]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", side_effect=fake_find_lib):
         sync_metadata_once(config, client)
 
@@ -549,6 +551,7 @@ def test_sync_metadata_once_skips_when_book_not_in_library():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", return_value=None):
         sync_metadata_once(config, client)
 
@@ -566,10 +569,30 @@ def test_sync_metadata_once_fills_empty_description():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", return_value=7):
         sync_metadata_once(config, client)
 
     client.update_book_metadata.assert_called_once_with(7, {"comments": "A mind-bending thriller."})
+
+
+def test_sync_metadata_once_includes_currently_reading_books():
+    """Books on the currently-reading shelf also get their metadata synced."""
+    config = _make_config(fix_metadata=True, hardcover_api_key="key", goodreads_rss_url=None)
+    client = MagicMock()
+    book = Book("Dune", "Frank Herbert", description="A sci-fi epic.")
+
+    cwa_meta = {**_EMPTY_CWA_META, "authors": "frank herbert", "title": "Dune"}
+    client.get_book_metadata.return_value = cwa_meta
+    client.update_book_metadata.return_value = True
+
+    with patch("main.hardcover.fetch_want_to_read", return_value=[]), \
+         patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[book]), \
+         patch("main.cwa.find_book_in_library", return_value=55):
+        sync_metadata_once(config, client)
+
+    client.update_book_metadata.assert_called_once_with(55, {"comments": "A sci-fi epic."})
 
 
 def test_sync_metadata_once_retries_failed_updates():
@@ -584,6 +607,7 @@ def test_sync_metadata_once_retries_failed_updates():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", return_value=42), \
          patch("main.time.sleep"):
         sync_metadata_once(config, client)
@@ -603,6 +627,7 @@ def test_sync_metadata_once_gives_up_after_three_retries():
 
     with patch("main.hardcover.fetch_want_to_read", return_value=[book]), \
          patch("main.hardcover.fetch_read", return_value=[]), \
+         patch("main.hardcover.fetch_currently_reading", return_value=[]), \
          patch("main.cwa.find_book_in_library", return_value=42), \
          patch("main.time.sleep"):
         sync_metadata_once(config, client)

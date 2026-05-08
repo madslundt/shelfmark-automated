@@ -130,6 +130,68 @@ def fetch_want_to_read(rss_url: str) -> list[Book]:
     return books
 
 
+def fetch_currently_reading(rss_url: str) -> list[Book]:
+    """Fetch currently-reading books from the Goodreads 'currently-reading' shelf RSS feed.
+
+    Args:
+        rss_url: Goodreads RSS URL. The shelf parameter is forced to 'currently-reading'.
+
+    Returns:
+        List of Book objects with source="goodreads".
+
+    Raises:
+        requests.ConnectionError / requests.Timeout: After all retries exhausted.
+    """
+    url = _force_shelf(rss_url, "currently-reading")
+    log.debug("Goodreads: fetching currently-reading shelf RSS from %s", url)
+
+    def _do_fetch():
+        resp = requests.get(url, timeout=30, headers={"User-Agent": "shelfmark-automated/1.0"})
+        resp.raise_for_status()
+        return resp.text
+
+    raw_xml = _with_retry(_do_fetch)
+    feed = feedparser.parse(raw_xml)
+
+    if feed.bozo and not feed.entries:
+        log.warning("Goodreads: RSS parse error — %s", feed.get("bozo_exception", "unknown"))
+        return []
+
+    books: list[Book] = []
+    for entry in feed.entries:
+        try:
+            title = (getattr(entry, "title", "") or "").strip()
+            if not title:
+                continue
+
+            author = (getattr(entry, "author_name", "") or "").strip()
+            if not author:
+                author = (getattr(entry, "author", "") or "").strip()
+
+            raw_isbn = (getattr(entry, "isbn", "") or "").strip()
+            isbn_10 = raw_isbn if raw_isbn else None
+            source_id = str(getattr(entry, "book_id", "") or "").strip()
+
+            raw_summary = getattr(entry, "summary", "")
+            description = raw_summary.strip() or None if isinstance(raw_summary, str) else None
+
+            books.append(Book(
+                title=title,
+                author=author,
+                isbn_10=isbn_10,
+                isbn_13=None,
+                source="goodreads",
+                source_id=source_id,
+                description=description,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Skipping malformed Goodreads entry: %s", exc)
+            continue
+
+    log.info("Goodreads: fetched %d currently-reading books", len(books))
+    return books
+
+
 def fetch_read(rss_url: str) -> list[Book]:
     """Fetch fully-read books from the Goodreads 'read' shelf RSS feed.
 

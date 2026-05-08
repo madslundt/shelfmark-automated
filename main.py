@@ -47,6 +47,7 @@ class Config:
     fix_metadata: bool
     sync_on_start: bool
     log_level: str
+    dry_run: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -115,6 +116,9 @@ class Config:
                 "false", "0", "no", ""
             },
             log_level=optional("LOG_LEVEL") or "INFO",
+            dry_run=os.environ.get("DRY_RUN", "false").strip().lower() not in {
+                "false", "0", "no", ""
+            },
         )
 
 
@@ -328,6 +332,7 @@ def sync_read_status_once(
     config: Config,
     cwa_client: "CWAClient | None",
     state: StateManager | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Fetch fully-read books and mark them as read in CWA.
 
@@ -382,6 +387,10 @@ def sync_read_status_once(
             log.debug("Read status sync: %r not found in CWA — skipping", book.title)
             skip_count += 1
             continue
+        if dry_run:
+            log.info("[DRY RUN] would mark as read: %r (book_id=%d)", book.title, book_id)
+            ok_count += 1
+            continue
         try:
             ok = cwa_client.mark_as_read(book_id)
         except CWAAuthError as exc:
@@ -406,6 +415,7 @@ def sync_read_status_once(
 def sync_metadata_once(
     config: Config,
     cwa_client: "CWAClient | None",
+    dry_run: bool = False,
 ) -> None:
     """Fetch all books from Hardcover/Goodreads and fix wrong author metadata in CWA.
 
@@ -464,6 +474,13 @@ def sync_metadata_once(
                 "author (likely a CWA title mismatch, not a wrong author)",
                 book_id, book.title, wrong_author,
             )
+            continue
+        if dry_run:
+            log.info(
+                "[DRY RUN] would fix author for book %d %r: %r → %r",
+                book_id, book.title, wrong_author, book.author,
+            )
+            ok_count += 1
             continue
         try:
             ok = cwa_client.update_book_author(book_id, book.author)
@@ -531,7 +548,7 @@ def main() -> None:
     log.info(
         "shelfmark-automated starting up  "
         "(interval=%d-%ds, full_sync=%ds, read_status_sync=%s, fix_metadata=%s, "
-        "sync_on_start=%s, cwa=%s, shelfmark=%s, state=%s)",
+        "sync_on_start=%s, dry_run=%s, cwa=%s, shelfmark=%s, state=%s)",
         config.sync_interval_min_seconds,
         config.sync_interval_max_seconds,
         config.full_sync_interval_seconds,
@@ -540,10 +557,13 @@ def main() -> None:
         else "disabled",
         "enabled" if config.fix_metadata else "disabled",
         "yes" if config.sync_on_start else "no",
+        "yes" if config.dry_run else "no",
         config.cwa_url or "not configured",
         config.shelfmark_url or "not configured",
         config.state_file or "disabled",
     )
+    if config.dry_run:
+        log.info("DRY RUN mode — no changes will be written to CWA")
 
     if not config.hardcover_api_key and not config.goodreads_rss_url:
         log.warning(
@@ -563,6 +583,19 @@ def main() -> None:
     state: StateManager | None = None
     if config.state_file is not None:
         state = StateManager(config.state_file)
+
+    if config.dry_run:
+        log.info("DRY RUN: running read status sync and metadata fix (no changes will be made)")
+        try:
+            sync_read_status_once(config, cwa_read_client, state, dry_run=True)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Read status dry run failed: %s", exc, exc_info=True)
+        try:
+            sync_metadata_once(config, cwa_read_client, dry_run=True)
+        except Exception as exc:  # noqa: BLE001
+            log.error("Metadata fix dry run failed: %s", exc, exc_info=True)
+        log.info("DRY RUN complete — exiting without changes")
+        return
 
     if config.sync_on_start:
         log.info("SYNC_ON_START: running read status sync and metadata fix before main loop")

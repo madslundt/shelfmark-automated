@@ -114,6 +114,7 @@ def _make_config(**overrides):
         fix_metadata=True,
         sync_on_start=False,
         log_level="INFO",
+        dry_run=False,
     )
     return Config(**{**defaults, **overrides})
 
@@ -294,6 +295,7 @@ def test_sync_read_status_marks_found_book():
         fix_metadata=True,
         sync_on_start=False,
         log_level="INFO",
+        dry_run=False,
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
 
@@ -325,6 +327,7 @@ def test_sync_read_status_skips_book_not_in_library():
         fix_metadata=True,
         sync_on_start=False,
         log_level="INFO",
+        dry_run=False,
     )
     book = Book("Unknown Book", "Nobody", source="hardcover")
 
@@ -357,6 +360,7 @@ def test_sync_read_status_skips_already_processed(tmp_path):
         fix_metadata=True,
         sync_on_start=False,
         log_level="INFO",
+        dry_run=False,
     )
     book = Book("The Martian", "Andy Weir", source="hardcover")
     state.mark_read_status_set(book)
@@ -389,6 +393,7 @@ def test_sync_read_status_no_cwa_client_exits_early():
         fix_metadata=True,
         sync_on_start=False,
         log_level="INFO",
+        dry_run=False,
     )
 
     with patch("main.hardcover.fetch_read", return_value=[]) as mock_fetch:
@@ -492,7 +497,7 @@ def test_sync_metadata_once_calls_update_for_mismatch():
          patch("main.cwa.find_mismatched_author", return_value=(42, "jennifer harvey")):
         sync_metadata_once(config, client)
 
-    client.update_book_author.assert_called_once_with(42, "Nicola Sanders", "All The Lies")
+    client.update_book_author.assert_called_once_with(42, "Nicola Sanders")
 
 
 def test_sync_metadata_once_skips_when_wrong_author_is_known_correct():

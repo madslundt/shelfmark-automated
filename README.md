@@ -456,6 +456,35 @@ Without a volume mount the state file is stored inside the container and lost on
 
 ---
 
+## Maintenance
+
+### Fix Calibre author sort names
+
+If Calibre-Web logs errors like:
+
+```
+ERROR Author 'Sivers, Derek' not found to display name in right order
+```
+
+it means some author records in the Calibre database have `sort == name` (e.g. `"Derek Sivers"`) instead of the correct sort format (`"Sivers, Derek"`). Run the maintenance script to fix them:
+
+```bash
+# Stop Calibre-Web first, then:
+uv run python scripts/fix_calibre_author_sort.py /path/to/calibre/library
+
+# Preview changes without writing (safe to run while CWA is stopped):
+uv run python scripts/fix_calibre_author_sort.py /path/to/calibre/library --dry-run
+```
+
+The script:
+- Works on a local temp copy to avoid SMB/NFS SQLite locking issues
+- Fixes `authors.sort` using Calibre's "Lastname, Firstname" algorithm
+- Recomputes `books.author_sort` to match the corrected author sort names
+- Creates a `.bak` backup of the original `metadata.db` before writing
+- Is idempotent — safe to run repeatedly
+
+---
+
 ## Project structure
 
 ```
@@ -467,6 +496,8 @@ shelfmark-automated/
 │   ├── cwa.py          # CWA OPDS library checker + web session client (read status)
 │   ├── shelfmark.py    # Shelfmark API client (session auth + metadata search)
 │   └── state.py        # SQLite state manager for incremental sync
+├── scripts/
+│   └── fix_calibre_author_sort.py  # Fix author sort name mismatches in Calibre DB
 ├── main.py             # Entry point: config, sync loop, deduplication
 ├── pyproject.toml      # uv project (Python >=3.14)
 ├── .python-version     # Pins Python 3.14

@@ -45,8 +45,6 @@ _WANT_TO_READ_QUERY = """
             tag
           }
         }
-        community_rating
-        ratings_count
       }
     }
   }
@@ -86,8 +84,6 @@ _READ_QUERY = """
             tag
           }
         }
-        community_rating
-        ratings_count
       }
     }
   }

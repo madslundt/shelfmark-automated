@@ -318,7 +318,7 @@ curl -b /tmp/sm.txt -X POST "$SHELFMARK_URL/api/requests" \
 | `STATE_FILE` | No | — | Path to the SQLite state DB for incremental sync. Auto-detected as `/data/state.db` when `/data/` exists. |
 | `FULL_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to run a full re-check of all books regardless of state. Set to `0` to disable. |
 | `READ_STATUS_SYNC_INTERVAL_SECONDS` | No | `86400` | How often (in seconds) to sync read status from Hardcover/Goodreads to CWA. Set to `0` to disable entirely. Requires `CWA_USERNAME` and `CWA_PASSWORD`. |
-| `FIX_METADATA` | No | `true` | Automatically correct wrong author metadata in CWA. Runs on the same schedule as read-status sync (both shelves). Set to `false` to disable. Requires **"Edit books"** permission for your CWA user (Admin → Edit User). |
+| `FIX_METADATA` | No | `true` | Automatically sync metadata from Hardcover/Goodreads into CWA (author, description, series, publisher, pubdate, tags, identifiers, rating). Runs on the same schedule as read-status sync. Set to `false` to disable. Requires **"Edit books"** permission for your CWA user (Admin → Edit User). |
 | `SYNC_ON_START` | No | `false` | Run read-status sync and metadata fix immediately when the container starts, before the normal schedule kicks in. Useful when you restart Docker and want an immediate sync rather than waiting for the next interval. |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `PUID` | No | `1000` | UID the process runs as. Set to `0` if your `/data` volume mount is root-owned. |
@@ -378,13 +378,22 @@ Read status sync: 'Unknown Title' not found in CWA — skipping
 
 ## Metadata correction
 
-When `FIX_METADATA=true` (the default), the service automatically corrects wrong author metadata in CWA for books found on Hardcover or Goodreads. It runs on the same schedule as read-status sync.
+When `FIX_METADATA=true` (the default), the service automatically syncs metadata from Hardcover and Goodreads into CWA for any book found in both places. It runs on the same schedule as read-status sync.
 
-### What it does
+### What it syncs
 
-- Fetches books from your **Read** and **Want to Read** shelves on Hardcover and Goodreads
-- Searches CWA via OPDS for each book by title
-- When a title matches but the stored author differs, it writes the correct author back to CWA via `POST /edit/<id>`
+| Field | Strategy |
+|-------|----------|
+| **Author** | Always corrected when it differs from the source (normalized comparison) |
+| **Description** | Filled in when CWA has none |
+| **Series / series index** | Filled in when CWA has none |
+| **Publisher** | Filled in when CWA has none |
+| **Publication date** | Filled in when CWA has none |
+| **Tags / genres** | Filled in when CWA has none |
+| **Identifiers** (ISBN, Goodreads ID, Hardcover ID) | Added when not already present in CWA |
+| **Community rating** | Set from Hardcover when CWA has no rating and the book has ≥ 10 ratings (converted from 0–5 to Calibre's 0–10 scale) |
+
+Fields that already have a value in CWA (except author) are never overwritten, so any metadata you've manually curated is preserved.
 
 ### Prerequisite: enable "Edit books" in CWA
 
@@ -404,19 +413,19 @@ Runs on the same schedule as `READ_STATUS_SYNC_INTERVAL_SECONDS` (default: once 
 
 At the default `INFO` level:
 ```
-Metadata fix: book 42 'All The Lies' — author corrected from 'jennifer harvey' to 'Nicola Sanders'
-Metadata fix: 1 corrected, 0 failed
+Metadata fix: book 42 'All The Lies' — updated fields: ['authors', 'tags', 'rating']
+Metadata fix: 3 updated, 0 failed
 ```
 
-Set `LOG_LEVEL=DEBUG` for per-book detail including books where no mismatch was found.
+Set `LOG_LEVEL=DEBUG` for per-book detail including books where no fields needed updating.
 
 ### Common issues
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Metadata fix: 0 corrected` every run | No mismatches found, or books not yet in library | Check `LOG_LEVEL=DEBUG` output; confirm books exist in CWA |
+| `Metadata fix: 0 updated` every run | No gaps found, or books not yet in library | Check `LOG_LEVEL=DEBUG` output; confirm books exist in CWA |
 | `Metadata fix: failed to update book <id>` | CWA returned HTTP 403 | Enable **Edit books** permission for your CWA user (see prerequisite above) |
-| Author not updating despite `200 OK` | Field name mismatch with your CWA version | Set `LOG_LEVEL=DEBUG` and check the form fields in the edit page |
+| Field not updating despite `200 OK` | Field name mismatch with your CWA version | Set `LOG_LEVEL=DEBUG` and check the form fields in the edit page |
 
 ---
 

@@ -413,6 +413,7 @@ def sync_read_status_once(
 
 
 _MIN_RATINGS = 10
+_OL_RATE_LIMIT_SECONDS = 1.0
 
 
 def _build_new_identifiers(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
@@ -433,6 +434,47 @@ def _build_new_identifiers(book: Book, cwa_meta: dict[str, str]) -> dict[str, st
     elif book.source == "hardcover" and book.source_id and "hardcover" not in existing:
         result["hardcover"] = book.source_id
     return result
+
+
+def _enrich_book_from_openlibrary(book: Book) -> Book:
+    """Return Book with title/author corrected from Open Library when ISBN is available.
+
+    OL wins for title and author (ISBN-authoritative source).
+    OL fills publisher/pubdate only when the Book field is already None.
+    Returns original book unchanged when: no ISBN, no OL record, or OL call fails.
+    """
+    from dataclasses import replace
+
+    from src import openlibrary
+
+    isbn = book.best_isbn()
+    if not isbn:
+        return book
+    ol = openlibrary.fetch_by_isbn(isbn)
+    if not ol:
+        return book
+
+    new_title = ol.get("title") or book.title
+    new_author = ol.get("author") or book.author
+    new_publisher = book.publisher or ol.get("publisher")
+    new_pubdate = book.pubdate or ol.get("pubdate")
+
+    if new_title != book.title:
+        log.info(
+            "OL enrichment: title corrected for ISBN %s: %r → %r",
+            isbn, book.title, new_title,
+        )
+    if new_author != book.author:
+        log.info(
+            "OL enrichment: author corrected for ISBN %s (%r): %r → %r",
+            isbn, book.title, book.author, new_author,
+        )
+
+    if (new_title, new_author, new_publisher, new_pubdate) == (
+        book.title, book.author, book.publisher, book.pubdate
+    ):
+        return book
+    return replace(book, title=new_title, author=new_author, publisher=new_publisher, pubdate=new_pubdate)
 
 
 def _build_metadata_updates(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
@@ -520,6 +562,14 @@ def sync_metadata_once(
 
     all_books = deduplicate(all_books)
     log.debug("Metadata fix: checking %d unique books", len(all_books))
+
+    # OL enrichment: correct title/author from ISBN when available
+    enriched: list[Book] = []
+    for i, book in enumerate(all_books):
+        if i > 0 and book.best_isbn():
+            time.sleep(_OL_RATE_LIMIT_SECONDS)
+        enriched.append(_enrich_book_from_openlibrary(book))
+    all_books = enriched
 
     # Build set of known correct authors from our book lists.
     # If the "wrong" author in CWA is a correct author for a DIFFERENT book in our list,

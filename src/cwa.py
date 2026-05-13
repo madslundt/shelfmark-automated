@@ -417,6 +417,13 @@ class CWAClient:
 
         return self._post_read_status(book_id)
 
+    def get_book_admin_html(self, book_id: int) -> str | None:
+        """Return raw admin page HTML for a book, or None on error."""
+        if not self._authenticated:
+            self._login()
+        resp = self._session.get(f"{self._base_url}/admin/book/{book_id}")
+        return resp.text if resp.ok else None
+
     def get_book_metadata(self, book_id: int) -> dict[str, str] | None:
         """Return current metadata for a book as scraped from the CWA admin page.
 

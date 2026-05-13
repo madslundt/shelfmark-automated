@@ -55,7 +55,9 @@ def _parse_ol_response(data: dict[str, Any], isbn: str) -> dict[str, Any] | None
     author: str | None = ((authors[0].get("name") or "").strip() or None) if authors else None
 
     publishers = entry.get("publishers") or []
-    publisher: str | None = ((publishers[0].get("name") or "").strip() or None) if publishers else None
+    publisher: str | None = (
+        ((publishers[0].get("name") or "").strip() or None) if publishers else None
+    )
 
     pubdate: str | None = (entry.get("publish_date") or "").strip() or None
 

@@ -61,7 +61,7 @@ def fix_book_metadata(
 
         page_html = cwa_client.get_book_admin_html(book_id)
         if page_html is None:
-            print(f"  ERROR: could not fetch admin page — skipping")
+            print("  ERROR: could not fetch admin page — skipping")
             continue
 
         _, cwa_meta = cwa_client._parse_admin_page(page_html)

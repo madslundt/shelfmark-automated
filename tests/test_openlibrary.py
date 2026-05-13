@@ -2,11 +2,9 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 import requests
 
 from src.openlibrary import _parse_ol_response, fetch_by_isbn
-
 
 # ---------------------------------------------------------------------------
 # _parse_ol_response — unit tests (no HTTP)
@@ -84,7 +82,10 @@ def test_parse_ol_response_uses_first_publisher_only():
 
 
 def test_parse_ol_response_none_fields_handled():
-    data = {f"ISBN:{_ISBN}": {"title": None, "authors": [{"name": None}], "publishers": [{"name": None}], "publish_date": None}}
+    data = {f"ISBN:{_ISBN}": {
+        "title": None, "authors": [{"name": None}],
+        "publishers": [{"name": None}], "publish_date": None,
+    }}
     result = _parse_ol_response(data, _ISBN)
     assert result["title"] is None
     assert result["author"] is None

@@ -474,7 +474,9 @@ def _enrich_book_from_openlibrary(book: Book) -> Book:
         book.title, book.author, book.publisher, book.pubdate
     ):
         return book
-    return replace(book, title=new_title, author=new_author, publisher=new_publisher, pubdate=new_pubdate)
+    return replace(
+        book, title=new_title, author=new_author, publisher=new_publisher, pubdate=new_pubdate
+    )
 
 
 def _build_metadata_updates(book: Book, cwa_meta: dict[str, str]) -> dict[str, str]:
